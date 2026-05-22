@@ -15,7 +15,7 @@
 - [5. RTSP 预览接入（端口 8554）](#5-rtsp-预览接入端口-8554)
 - [6. REST API — 设备信息](#6-rest-api--设备信息)
 - [7. REST API — 相机控制](#7-rest-api--相机控制)
-- [8. REST API — 媒体文件（查看、下载、删除）](#8-rest-api--媒体文件查看下载删除)
+- [8. REST API — 媒体文件（在线查看、下载、删除）](#8-rest-api--媒体文件在线查看下载删除)
 - [9. REST API — 设置](#9-rest-api--设置)
 - [10. 工作模式定义](#10-工作模式定义)
 - [11. 连接初始化完整流程](#11-连接初始化完整流程)
@@ -53,7 +53,7 @@
 | POST | `/api/v1/camera/zoom` | 变焦 | P2 |
 | GET | `/api/v1/media/files` | 文件列表 | P1 |
 | GET | `/api/v1/media/thumbnail` | 缩略图 | P1 |
-| GET | `/api/v1/media/file` | 下载/查看文件 | P1 |
+| GET | `/api/v1/media/file` | 在线查看/下载文件 | P0 |
 | DELETE | `/api/v1/media/file` | 删除文件 | P1 |
 | GET | `/api/v1/settings/menus` | 获取菜单（含翻译和当前值） | P1 |
 | POST | `/api/v1/settings/menu/value` | 修改菜单选项 | P1 |
@@ -743,6 +743,20 @@ FijkView(player: _previewController.player)
 Video(controller: _previewController.videoController)
 ```
 
+### 5.6 RTSP 预览 vs 录像回放：两个不同的播放场景
+
+| | 实时预览 | 录像回放 |
+|---|---|---|
+| **播放什么** | 摄像头当前画面（直播流） | 已录好的视频文件 |
+| **数据源** | RTSP `rtsp://192.168.10.1:8554/ch00` | HTTP `http://192.168.10.1:8080/api/v1/media/file?path=...` |
+| **协议** | RTSP over TCP | HTTP Range 请求 |
+| **能拖进度条吗** | 不能，是直播 | 能，支持 seek |
+| **有缓冲条吗** | 无（实时流） | 有（边下边播） |
+| **用哪个播放器** | fijkplayer / media_kit（配 RTSP 参数） | media_kit / fijkplayer（配 HTTP URL） |
+| **对应页面** | PreviewPage（主界面） | VideoPlayPage（相册→点击视频） |
+
+> HDV CAM 原版 App 也是这么区分的：IJKPlayer 负责 RTSP 实时预览，ExoPlayer 负责 HTTP 录像回放。
+
 ---
 
 ## 6. REST API — 设备信息
@@ -1207,9 +1221,13 @@ Future<void> setZoom(int level) async {
 
 ---
 
-## 8. REST API — 媒体文件（查看、下载、删除）
+## 8. REST API — 媒体文件（在线查看、下载、删除）
 
 **这一章解决"如何查看相机里的视频和照片、如何下载到手机"的问题。**
+
+> **核心思路：先看后下。** 用户点开就能直接看（图片在线加载、视频在线播放），觉得满意再下载到手机。不需要先下载完才能看。
+>
+> **原理：** HDV CAM 原版 App（Android 端）也是这么做的——用 ExoPlayer 直接播放设备 HTTP URL（`http://192.168.10.1:8082/file/media/...`），ExoPlayer 通过 HTTP Range 请求边下边播，所以点开视频很快就能播、还能看到缓冲进度条。我们的做法一样，只是 URL 换成了我们的 REST API 路径。
 
 ### 完整流程
 
@@ -1217,22 +1235,32 @@ Future<void> setZoom(int level) async {
 App 打开相册页
      │
      ▼
-[1] 获取文件列表 GET /api/v1/media/files?type=photo
+[1] 获取文件列表  GET /api/v1/media/files?type=photo
      │
      ▼
-[2] 加载缩略图   GET /api/v1/media/thumbnail?path=xxx
-     │  （每个文件一张缩略图，用于列表展示）
+[2] 加载缩略图    GET /api/v1/media/thumbnail?path=xxx
+     │  （网格展示，每个文件一张小图）
      ▼
 用户点击某个文件
      │
-     ├─ 图片 → [3a] 下载原图查看  GET /api/v1/media/file?path=xxx
+     ├─ 图片 → [3a] 在线查看原图
+     │         Image.network(fileUrl) 直接从 HTTP 加载
+     │         不用先下载到本地，支持缩放手势
      │
-     └─ 视频 → [3b] 下载视频播放  GET /api/v1/media/file?path=xxx
-              （支持 Range 断点续传，可边下边播）
+     └─ 视频 → [3b] 在线播放视频
+               播放器直接用 HTTP URL 播放，边下边播
+               支持拖动进度条（设备端通过 Range 请求跳转）
+               1-2 秒内开始播放，有缓冲进度条
+     │
+     ▼
+用户觉得满意，点"保存到手机"
+     │
+     └─ [4] 下载到本地  GET /api/v1/media/file?path=xxx
+              用 Dio 下载到手机相册，显示下载进度
      │
 用户长按删除
      │
-     └─ [4] 删除文件 DELETE /api/v1/media/file?path=xxx
+     └─ [5] 删除文件  DELETE /api/v1/media/file?path=xxx
 ```
 
 ---
@@ -1430,7 +1458,7 @@ CachedNetworkImage(
 
 ---
 
-### 8.3 查看图片
+### 8.3 在线查看图片
 
 **优先级：P1**
 
@@ -1438,7 +1466,7 @@ CachedNetworkImage(
 GET /api/v1/media/file?path=/mnt/DCIM/Photo/IMG_20260522_143500.jpg
 ```
 
-返回图片二进制数据（`image/jpeg`）。
+返回图片二进制数据（`image/jpeg`）。直接用 `Image.network` 加载，不需要先下载到本地。
 
 #### 全屏查看图片
 
@@ -1449,10 +1477,19 @@ class PhotoViewPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(file.name)),
+      appBar: AppBar(
+        title: Text(file.name),
+        actions: [
+          // 保存到手机按钮
+          IconButton(
+            icon: Icon(Icons.download),
+            onPressed: () => _saveToPhone(context, file),
+          ),
+        ],
+      ),
       body: InteractiveViewer(
         child: Image.network(
-          file.fileUrl,
+          file.fileUrl,  // 直接用 HTTP URL，在线加载
           fit: BoxFit.contain,
           loadingBuilder: (_, child, progress) {
             if (progress == null) return child;
@@ -1471,15 +1508,157 @@ class PhotoViewPage extends StatelessWidget {
 
 ---
 
-### 8.4 下载视频到本地
+### 8.4 在线播放视频
+
+**优先级：P0**
+
+> **这是相册功能最重要的能力。** 用户点开视频，1-2 秒内开始播放，有缓冲进度条，可以拖动进度条跳转。不需要等整个视频下载完。
+>
+> **原理：** 播放器直接用设备的 HTTP URL 作为数据源，通过 Range 请求分段获取数据，边下边播。HDV CAM 原版 App 中 Android 端用的是 ExoPlayer，我们用 `media_kit`（基于 MPV）或 `fijkplayer`（基于 IJK），原理一样。
+
+```
+播放器的数据源 URL:
+http://192.168.10.1:8080/api/v1/media/file?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+```
+
+#### 方案对比
+
+| 方案 | 包名 | 优势 | 劣势 |
+|---|---|---|---|
+| **media_kit（推荐）** | `media_kit` | 基于 MPV，跨平台，支持 HTTP/RTSP，维护活跃 | 相对较新 |
+| fijkplayer | `fijkplayer` | 基于 IJK（与 HDV CAM 原版同源） | 维护不活跃 |
+| flutter_vlc_player | `flutter_vlc_player` | 稳定，支持 RTSP | 包体大 |
+
+#### 用 media_kit 在线播放（推荐）
+
+```dart
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+
+class VideoPlayPage extends StatefulWidget {
+  final MediaFile file;
+  const VideoPlayPage({required this.file});
+
+  @override
+  State<VideoPlayPage> createState() => _VideoPlayPageState();
+}
+
+class _VideoPlayPageState extends State<VideoPlayPage> {
+  late final Player _player;
+  late final VideoController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _player = Player();
+    _controller = VideoController(_player);
+
+    // 直接用 HTTP URL 播放，不需要先下载
+    _player.open(Media(widget.file.fileUrl));
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.file.name),
+        actions: [
+          // 下载到手机
+          IconButton(
+            icon: Icon(Icons.download),
+            onPressed: () => _saveToPhone(context, widget.file),
+          ),
+        ],
+      ),
+      body: Video(
+        controller: _controller,
+        // media_kit 内置了播放/暂停、进度条、全屏等控件
+      ),
+    );
+  }
+}
+```
+
+#### 用 fijkplayer 在线播放
+
+```dart
+import 'package:fijkplayer/fijkplayer.dart';
+
+class VideoPlayPage extends StatefulWidget {
+  final MediaFile file;
+  const VideoPlayPage({required this.file});
+
+  @override
+  State<VideoPlayPage> createState() => _VideoPlayPageState();
+}
+
+class _VideoPlayPageState extends State<VideoPlayPage> {
+  final FijkPlayer _player = FijkPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    // 开启硬解码
+    await _player.setOption(FijkOption.playerCategory, "mediacodec", 1);
+    // 减少缓冲延迟
+    await _player.setOption(FijkOption.playerCategory, "packet-buffering", 0);
+    await _player.setOption(FijkOption.playerCategory, "framedrop", 1);
+
+    // 直接用 HTTP URL 播放
+    await _player.setDataSource(
+      widget.file.fileUrl,
+      autoPlay: true,
+    );
+  }
+
+  @override
+  void dispose() {
+    _player.release();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.file.name),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.download),
+            onPressed: () => _saveToPhone(context, widget.file),
+          ),
+        ],
+      ),
+      body: FijkView(
+        player: _player,
+        // 内置播放控件（进度条、缓冲条、播放/暂停）
+      ),
+    );
+  }
+}
+```
+
+---
+
+### 8.5 下载文件到手机
 
 **优先级：P1**
+
+> 用户在线看完觉得满意，点"保存到手机"按钮时才下载。图片和视频都走这个流程。
 
 ```
 GET /api/v1/media/file?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
 ```
-
-返回视频二进制数据（`video/mp4`），支持 Range 断点续传。
 
 #### 用 Dio 下载（支持进度显示）
 
@@ -1507,32 +1686,43 @@ class FileDownloader {
     return savePath;
   }
 }
-
-// 使用示例
-final downloader = FileDownloader();
-
-await downloader.download(
-  videoFile,
-  onProgress: (received, total) {
-    final percent = (received / total * 100).toStringAsFixed(0);
-    print('下载进度: $percent%');
-  },
-);
 ```
 
-#### 下载后播放视频
+#### 下载按钮示例
 
 ```dart
-import 'package:open_file/open_file.dart';
+Future<void> _saveToPhone(BuildContext context, MediaFile file) async {
+  final downloader = FileDownloader();
 
-// 下载完成后用系统播放器打开
-final localPath = await downloader.download(videoFile);
-OpenFile.open(localPath);
+  // 显示下载进度对话框
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => _DownloadProgressDialog(
+      file: file,
+      downloader: downloader,
+    ),
+  );
+
+  final localPath = await downloader.download(
+    file,
+    onProgress: (received, total) {
+      final percent = (received / total * 100).toStringAsFixed(0);
+      debugPrint('下载进度: $percent%');
+    },
+  );
+
+  Navigator.pop(context); // 关闭进度对话框
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('已保存到: ${file.name}')),
+  );
+}
 ```
 
 ---
 
-### 8.5 删除文件
+### 8.6 删除文件
 
 **优先级：P1**
 
@@ -1559,7 +1749,7 @@ Future<bool> deleteFile(MediaFile file) async {
 
 ---
 
-### 8.6 相册页完整示例
+### 8.7 相册页完整示例
 
 ```dart
 class AlbumPage extends StatefulWidget {
@@ -1647,12 +1837,13 @@ class _AlbumPageState extends State<AlbumPage> with SingleTickerProviderStateMix
 
   void _openFile(MediaFile file) {
     if (file.isPhoto) {
-      // 打开图片查看页
+      // 在线查看图片
       Navigator.push(context,
         MaterialPageRoute(builder: (_) => PhotoViewPage(file: file)));
     } else {
-      // 下载视频后播放
-      _downloadAndPlay(file);
+      // 在线播放视频（直接用 HTTP URL，不用先下载）
+      Navigator.push(context,
+        MaterialPageRoute(builder: (_) => VideoPlayPage(file: file)));
     }
   }
 }

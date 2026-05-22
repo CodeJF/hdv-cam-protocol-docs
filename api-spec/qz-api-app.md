@@ -52,7 +52,7 @@
 | POST | `/api/v1/camera/playback/exit` | 退出回放 | P1 |
 | POST | `/api/v1/camera/zoom` | 变焦 | P2 |
 | GET | `/api/v1/media/files` | 文件列表 | P1 |
-| GET | `/api/v1/media/thumbnail` | 缩略图 | P1 |
+| GET | `/thumb/<path>.jpg` | 缩略图（静态 URL） | P1 |
 | GET | `/api/v1/media/file` | 在线查看/下载文件 | P0 |
 | DELETE | `/api/v1/media/file` | 删除文件 | P1 |
 | GET | `/api/v1/settings/menus` | 获取菜单（含翻译和当前值） | P1 |
@@ -1041,6 +1041,8 @@ if (resp.isSuccess) {
 
 **优先级：P0**
 
+**什么时候调用：** 用户在预览页点"录像"按钮。需要当前处于录像模式（modeIndex 0-3）。
+
 ```
 POST /api/v1/camera/record/start
 ```
@@ -1057,6 +1059,15 @@ POST /api/v1/camera/record/start
 }
 ```
 
+`data` 为 `null`，成功与否看 `code`。
+
+#### 错误情况
+
+| code | msg | 说明 |
+|---|---|---|
+| -3 | sd card not found | SD 卡未插入 |
+| -4 | storage full | SD 卡空间不足 |
+
 #### 调用示例
 
 ```dart
@@ -1064,6 +1075,10 @@ Future<void> startRecording() async {
   final resp = await http.post('/api/v1/camera/record/start');
   if (resp.isSuccess) {
     setState(() => _isRecording = true);
+  } else if (resp.code == -3) {
+    showError('请插入 SD 卡');
+  } else if (resp.code == -4) {
+    showError('SD 卡已满，请清理文件');
   } else {
     showError('录像启动失败: ${resp.msg}');
   }
@@ -1076,11 +1091,37 @@ Future<void> startRecording() async {
 
 **优先级：P0**
 
+**什么时候调用：** 用户点"停止"按钮，或 App 需要切换模式 / 进入相册前自动调用。
+
 ```
 POST /api/v1/camera/record/stop
 ```
 
 无请求体。
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "path": "/mnt/DCIM/Normal/VID_20260522_143000.MP4",
+    "duration": 120,
+    "size": 52428800
+  }
+}
+```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `path` | string | 刚录好的视频文件完整路径 |
+| `duration` | number | 视频时长（秒） |
+| `size` | number | 文件大小（字节） |
+
+> 未在录像时调用此接口，返回成功但 `data` 为 `null`。
 
 #### 调用示例
 
@@ -1089,6 +1130,11 @@ Future<void> stopRecording() async {
   final resp = await http.post('/api/v1/camera/record/stop');
   if (resp.isSuccess) {
     setState(() => _isRecording = false);
+    if (resp.data != null) {
+      final path = resp.data['path'];
+      final duration = resp.data['duration'];
+      showSnackBar('录像已保存，时长 ${duration}s');
+    }
   }
 }
 ```
@@ -1098,6 +1144,8 @@ Future<void> stopRecording() async {
 ### 7.4 拍照
 
 **优先级：P0**
+
+**什么时候调用：** 用户在预览页点"拍照"按钮。需要当前处于拍照模式（modeIndex 4-7）。
 
 ```
 POST /api/v1/camera/capture
@@ -1112,10 +1160,30 @@ POST /api/v1/camera/capture
   "code": 0,
   "msg": "ok",
   "data": {
-    "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg"
+    "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg",
+    "size": 2048000,
+    "width": 4032,
+    "height": 3024
   }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `path` | string | 拍摄的照片完整路径 |
+| `size` | number | 文件大小（字节） |
+| `width` | number | 图片宽度（像素） |
+| `height` | number | 图片高度（像素） |
+
+#### 错误情况
+
+| code | msg | 说明 |
+|---|---|---|
+| -2 | wrong mode | 当前不在拍照模式 |
+| -3 | sd card not found | SD 卡未插入 |
+| -4 | storage full | SD 卡空间不足 |
 
 #### 调用示例
 
@@ -1125,7 +1193,9 @@ Future<void> takePhoto() async {
   if (resp.isSuccess) {
     final path = resp.data['path'];
     showSnackBar('拍照成功');
-    // 可以立即用 path 获取缩略图预览
+    // path 可以直接拼缩略图 URL 预览
+  } else if (resp.code == -2) {
+    showError('请先切换到拍照模式');
   }
 }
 ```
@@ -1136,12 +1206,22 @@ Future<void> takePhoto() async {
 
 **优先级：P1**
 
+**什么时候调用：** 用户在预览页切换录像/拍照/延时等模式。
+
 ```
 POST /api/v1/camera/mode
 Content-Type: application/json
+```
 
+#### 请求体
+
+```json
 {"mode": 4}
 ```
+
+| 字段 | 类型 | 必填 | 取值范围 | 说明 |
+|---|---|---|---|---|
+| `mode` | number | 是 | 0-7 | 目标模式编号，见 [第 10 章](#10-工作模式定义) |
 
 #### 响应示例
 
@@ -1156,6 +1236,15 @@ Content-Type: application/json
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | string | 切换后的工作模式名 |
+| `modeIndex` | number | 切换后的工作模式编号 |
+
+> 如果正在录像，设备会先自动停止录像再切换模式。
+
 #### 调用示例
 
 ```dart
@@ -1169,7 +1258,7 @@ Future<void> switchMode(int modeIndex) async {
       _currentMode = resp.data['mode'];
       _currentModeIndex = resp.data['modeIndex'];
     });
-    // 切换模式后重新加载菜单
+    // 切换模式后菜单项会变，重新加载
     await loadMenus();
   }
 }
@@ -1181,21 +1270,73 @@ Future<void> switchMode(int modeIndex) async {
 
 **优先级：P1**
 
+> **什么时候调用？** App 从预览页进入相册页时调用 `enter`，从相册页返回预览页时调用 `exit`。
+>
+> **为什么需要？** 相机硬件资源有限。预览模式下传感器和编码器在实时工作（输出 RTSP 流），进入回放模式后设备释放编码资源给文件服务（缩略图加载、视频在线播放会更流畅）。退出回放后设备恢复 RTSP 预览流。HDV CAM 原版协议中这是必须调用的命令（`cmd=0xbd9`），**不调用的话进相册可能导致设备响应变慢或预览黑屏**。
+
 ```
-POST /api/v1/camera/playback/enter    ← 进入
-POST /api/v1/camera/playback/exit     ← 退出
+POST /api/v1/camera/playback/enter    ← 进入回放（进相册前）
+POST /api/v1/camera/playback/exit     ← 退出回放（回预览时）
 ```
 
 无请求体。
 
+#### 返回示例
+
+**进入回放：**
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "mode": "playback"
+  }
+}
+```
+
+**退出回放：**
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "mode": "NormalRecordeMode",
+    "modeIndex": 0
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | string | 进入时固定 `"playback"`；退出时返回恢复后的工作模式名 |
+| `modeIndex` | number | 退出时返回恢复后的工作模式编号（进入时无此字段） |
+
 #### 调用示例
 
 ```dart
-// 进入回放（查看相册前调用）
-await http.post('/api/v1/camera/playback/enter');
+class AlbumPage extends StatefulWidget {
+  @override
+  State<AlbumPage> createState() => _AlbumPageState();
+}
 
-// 退出回放（返回预览时调用）
-await http.post('/api/v1/camera/playback/exit');
+class _AlbumPageState extends State<AlbumPage> {
+  @override
+  void initState() {
+    super.initState();
+    // 进入相册页时，通知设备进入回放模式
+    http.post('/api/v1/camera/playback/enter');
+    _loadFiles();
+  }
+
+  @override
+  void dispose() {
+    // 离开相册页时，通知设备退出回放模式，恢复 RTSP 预览
+    http.post('/api/v1/camera/playback/exit');
+    super.dispose();
+  }
+
+  // ...
+}
 ```
 
 ---
@@ -1204,18 +1345,49 @@ await http.post('/api/v1/camera/playback/exit');
 
 **优先级：P2**
 
+**什么时候调用：** 用户在预览页双指缩放或点击变焦按钮。
+
 ```
 POST /api/v1/camera/zoom
 Content-Type: application/json
+```
 
+#### 请求体
+
+```json
 {"level": 5}
 ```
+
+| 字段 | 类型 | 必填 | 取值范围 | 说明 |
+|---|---|---|---|---|
+| `level` | number | 是 | 0-10 | 变焦级别，0 为无缩放，10 为最大 |
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "level": 5
+  }
+}
+```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `level` | number | 当前实际变焦级别 |
 
 #### 调用示例
 
 ```dart
 Future<void> setZoom(int level) async {
-  await http.post('/api/v1/camera/zoom', body: {'level': level});
+  final resp = await http.post('/api/v1/camera/zoom', body: {'level': level});
+  if (resp.isSuccess) {
+    setState(() => _zoomLevel = resp.data['level']);
+  }
 }
 ```
 
@@ -1349,9 +1521,13 @@ class MediaFile {
                       name.toLowerCase().endsWith('.mov');
   bool get isPhoto => name.toLowerCase().endsWith('.jpg');
 
-  /// 缩略图 URL
-  String get thumbnailUrl =>
-    'http://192.168.10.1:8080/api/v1/media/thumbnail?path=${Uri.encodeComponent(path)}';
+  /// 缩略图 URL（静态 HTTP URL，直接给 Image.network / CachedNetworkImage 使用）
+  String get thumbnailUrl {
+    // path 格式：/mnt/DCIM/Normal/VID_xxx.MP4
+    // 缩略图 URL：http://192.168.10.1:8080/thumb/mnt/DCIM/Normal/VID_xxx.MP4.jpg
+    final trimmed = path.startsWith('/') ? path.substring(1) : path;
+    return 'http://192.168.10.1:8080/thumb/$trimmed.jpg';
+  }
 
   /// 文件下载 URL
   String get fileUrl =>
@@ -1423,38 +1599,56 @@ Future<MediaFileList> getPhotoList({int page = 1}) async {
 
 ---
 
-### 8.2 获取缩略图
+### 8.2 缩略图
 
 **优先级：P1**
 
+> **缩略图是静态 HTTP URL，不走 REST API 接口。** 视频和照片都有缩略图。URL 是固定规则拼出来的，不需要单独请求。直接把 URL 传给 Flutter 图片组件加载即可。
+
+#### URL 规则
+
 ```
-GET /api/v1/media/thumbnail?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+http://192.168.10.1:8080/thumb/<文件路径去掉开头斜杠>.jpg
 ```
 
-返回 JPEG 图片二进制数据（不是 JSON）。
+| 原文件路径 | 缩略图 URL |
+|---|---|
+| `/mnt/DCIM/Normal/VID_20260522_143000.MP4` | `http://192.168.10.1:8080/thumb/mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg` |
+| `/mnt/DCIM/Photo/IMG_20260522_143500.jpg` | `http://192.168.10.1:8080/thumb/mnt/DCIM/Photo/IMG_20260522_143500.jpg.jpg` |
+
+`MediaFile` 数据模型里已经封装了这个规则，直接用 `file.thumbnailUrl` 即可。
 
 #### 在列表中显示缩略图
 
 ```dart
-// 方式 1：直接用 Image.network
+// 方式 1：直接用 Image.network（简单场景）
 Image.network(
-  file.thumbnailUrl,
+  file.thumbnailUrl,   // 静态 HTTP URL，Flutter 直接加载
   width: 120,
   height: 90,
   fit: BoxFit.cover,
   errorBuilder: (_, __, ___) => Icon(Icons.broken_image),
 )
 
-// 方式 2：用 cached_network_image 缓存（推荐）
+// 方式 2：用 cached_network_image（推荐，自带磁盘缓存 + 内存缓存）
 CachedNetworkImage(
   imageUrl: file.thumbnailUrl,
   width: 120,
   height: 90,
   fit: BoxFit.cover,
-  placeholder: (_, __) => CircularProgressIndicator(),
+  placeholder: (_, __) => Container(
+    color: Colors.grey[300],
+    child: Icon(Icons.image, color: Colors.grey),
+  ),
   errorWidget: (_, __, ___) => Icon(Icons.broken_image),
 )
 ```
+
+> **为什么用静态 URL 而不是 REST API 接口？**
+> - `Image.network` / `CachedNetworkImage` 直接传 URL 就能用，不需要额外封装 HTTP 请求
+> - `CachedNetworkImage` 会自动做磁盘缓存 + 内存缓存，相册页来回切换不用重复下载
+> - 相册页 GridView 同时显示 20+ 张缩略图，图片库能自动并发加载、取消离屏请求
+> - HDV CAM 原版也是这么做的：`/thumb/mnt/DCIM/...`，Android 端用 Glide 加载，iOS 端用 SDWebImage 加载
 
 ---
 

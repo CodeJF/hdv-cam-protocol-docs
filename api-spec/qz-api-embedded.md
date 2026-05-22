@@ -769,6 +769,8 @@ curl -s http://192.168.10.1:8080/api/v1/camera/status | python3 -m json.tool
 
 **优先级：P0**
 
+**调用场景：** 用户在 App 预览页点"录像"按钮。
+
 ```
 POST /api/v1/camera/record/start
 ```
@@ -793,6 +795,13 @@ POST /api/v1/camera/record/start
 
 **已在录像时再次收到此请求：** 返回成功，不重复操作。
 
+**错误情况返回：**
+
+| 场景 | code | msg |
+|---|---|---|
+| SD 卡未插入 | -3 | sd card not found |
+| SD 卡空间不足 | -4 | storage full |
+
 **curl 自测：**
 
 ```bash
@@ -809,6 +818,8 @@ curl -s http://192.168.10.1:8080/api/v1/camera/status | python3 -m json.tool
 
 **优先级：P0**
 
+**调用场景：** 用户在 App 预览页点"停止"按钮，或切换工作模式前 App 自动调用。
+
 ```
 POST /api/v1/camera/record/stop
 ```
@@ -821,16 +832,32 @@ POST /api/v1/camera/record/stop
 {
   "code": 0,
   "msg": "ok",
-  "data": null
+  "data": {
+    "path": "/mnt/DCIM/Normal/VID_20260522_143000.MP4",
+    "duration": 120,
+    "size": 52428800
+  }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `path` | string | 刚录好的视频文件完整路径 |
+| `duration` | number | 视频时长（秒） |
+| `size` | number | 文件大小（字节） |
 
 **你要做的事：**
 
 1. 停止录像
 2. 保存视频文件到 `/mnt/DCIM/Normal/`（或当前模式对应目录）
-3. 内部录像状态置为 `false`
-4. 通过 TCP 9999 推送 `{"event": "record_stopped"}`
+3. **对 MP4 文件做 faststart 处理**（moov atom 移到文件头部，详见 8.3 节）
+4. 生成缩略图到 `/mnt/DCIM/.thumbnails/` 目录
+5. 内部录像状态置为 `false`
+6. 通过 TCP 9999 推送 `{"event": "record_stopped", "path": "..."}`
+
+**未在录像时收到此请求：** 返回成功，不做操作。
 
 **curl 自测：**
 
@@ -843,6 +870,8 @@ curl -s -X POST http://192.168.10.1:8080/api/v1/camera/record/stop | python3 -m 
 ### 7.4 拍照
 
 **优先级：P0**
+
+**调用场景：** 用户在 App 预览页点"拍照"按钮（需要处于拍照模式 4-7）。
 
 ```
 POST /api/v1/camera/capture
@@ -857,21 +886,37 @@ POST /api/v1/camera/capture
   "code": 0,
   "msg": "ok",
   "data": {
-    "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg"
+    "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg",
+    "size": 2048000,
+    "width": 4032,
+    "height": 3024
   }
 }
 ```
 
+#### 返回字段（data）
+
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `path` | string | 拍摄的照片完整路径 |
+| `size` | number | 文件大小（字节） |
+| `width` | number | 图片宽度（像素） |
+| `height` | number | 图片高度（像素） |
 
 **你要做的事：**
 
 1. 执行拍照
 2. 保存到 `/mnt/DCIM/Photo/IMG_yyyyMMdd_HHmmss.jpg`
 3. 生成缩略图到 `/mnt/DCIM/.thumbnails/` 目录
-4. 通过 TCP 9999 推送 `{"event": "capture_done", "path": "..."}`
+4. 通过 TCP 9999 推送 `{"event": "capture_done", "path": "...", "size": ...}`
+
+**错误情况返回：**
+
+| 场景 | code | msg |
+|---|---|---|
+| 当前不在拍照模式 | -2 | wrong mode |
+| SD 卡未插入 | -3 | sd card not found |
+| SD 卡空间不足 | -4 | storage full |
 
 **curl 自测：**
 
@@ -885,18 +930,24 @@ curl -s -X POST http://192.168.10.1:8080/api/v1/camera/capture | python3 -m json
 
 **优先级：P1**
 
+**调用场景：** 用户在 App 预览页切换录像/拍照/延时等模式。
+
 ```
 POST /api/v1/camera/mode
 Content-Type: application/json
+```
 
+#### 请求体
+
+```json
 {
   "mode": 4
 }
 ```
 
-| 参数 | 类型 | 取值范围 | 说明 |
-|---|---|---|---|
-| `mode` | number | 0-7 | 目标模式编号，见 [第 10 章](#10-工作模式定义) |
+| 字段 | 类型 | 必填 | 取值范围 | 说明 |
+|---|---|---|---|---|
+| `mode` | number | 是 | 0-7 | 目标模式编号，见 [第 10 章](#10-工作模式定义) |
 
 **你要返回：**
 
@@ -911,11 +962,18 @@ Content-Type: application/json
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | string | 切换后的工作模式名 |
+| `modeIndex` | number | 切换后的工作模式编号 |
+
 **你要做的事：**
 
-1. 切换到指定工作模式
-2. 如果正在录像，先停止录像再切换
-3. 通过 TCP 9999 推送 `{"event": "mode_changed", "mode": "NormalCaptureMode"}`
+1. 如果正在录像，**先停止录像**再切换
+2. 切换到指定工作模式
+3. 通过 TCP 9999 推送 `{"event": "mode_changed", "mode": "NormalCaptureMode", "modeIndex": 4}`
 
 **curl 自测：**
 
@@ -932,6 +990,10 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 **优先级：P1**
 
+**调用场景：** App 从预览页进入相册页时调用。
+
+> **为什么需要这个接口？** 相机在"预览模式"和"回放模式"下的硬件资源分配不同。预览模式时，传感器和编码器在持续工作（实时出 RTSP 流）。进入回放模式后，设备可以释放实时编码资源，把 CPU/内存让给文件读取（缩略图生成、视频 HTTP 在线播放等），响应会更快。HDV CAM 原版协议中这是一个 P0 命令（`cmd=0xbd9`），App 进相册前必须调用。
+
 ```
 POST /api/v1/camera/playback/enter
 ```
@@ -944,9 +1006,26 @@ POST /api/v1/camera/playback/enter
 {
   "code": 0,
   "msg": "ok",
-  "data": null
+  "data": {
+    "mode": "playback"
+  }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | string | 固定返回 `"playback"` |
+
+**你要做的事：**
+
+1. 如果正在录像，**先停止录像**（保存当前文件）
+2. 停止 RTSP 实时预览流（可选，减轻 CPU 负载）
+3. 内部状态标记为"回放模式"
+4. 准备好文件服务（确保 HTTP 文件接口可响应）
+
+**已在回放模式时再次收到此请求：** 返回成功，不重复操作。
 
 **curl 自测：**
 
@@ -960,6 +1039,10 @@ curl -s -X POST http://192.168.10.1:8080/api/v1/camera/playback/enter | python3 
 
 **优先级：P1**
 
+**调用场景：** App 从相册页返回预览页时调用。
+
+> **为什么需要这个接口？** 退出回放后设备恢复实时编码，重新输出 RTSP 预览流。App 退出相册回到预览页时必须调用，否则预览画面可能黑屏。
+
 ```
 POST /api/v1/camera/playback/exit
 ```
@@ -972,14 +1055,37 @@ POST /api/v1/camera/playback/exit
 {
   "code": 0,
   "msg": "ok",
-  "data": null
+  "data": {
+    "mode": "NormalRecordeMode",
+    "modeIndex": 0
+  }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | string | 恢复后的工作模式名 |
+| `modeIndex` | number | 恢复后的工作模式编号 |
+
+**你要做的事：**
+
+1. 退出回放模式
+2. 恢复 RTSP 实时预览流
+3. 恢复到进入回放前的工作模式
+4. 内部状态恢复为正常工作模式
+
+**未在回放模式时收到此请求：** 返回成功，不做操作。
 
 **curl 自测：**
 
 ```bash
 curl -s -X POST http://192.168.10.1:8080/api/v1/camera/playback/exit | python3 -m json.tool
+
+# 退出后验证 RTSP 预览已恢复
+curl -s http://192.168.10.1:8080/api/v1/camera/status | python3 -m json.tool
+# 应该看到正常的 mode 和 rtspUrl
 ```
 
 ---
@@ -988,18 +1094,24 @@ curl -s -X POST http://192.168.10.1:8080/api/v1/camera/playback/exit | python3 -
 
 **优先级：P2**
 
+**调用场景：** 用户在 App 预览页双指缩放或点击变焦按钮。
+
 ```
 POST /api/v1/camera/zoom
 Content-Type: application/json
+```
 
+#### 请求体
+
+```json
 {
   "level": 5
 }
 ```
 
-| 参数 | 类型 | 取值范围 | 说明 |
-|---|---|---|---|
-| `level` | number | 0-10 | 变焦级别，0 为无缩放 |
+| 字段 | 类型 | 必填 | 取值范围 | 说明 |
+|---|---|---|---|---|
+| `level` | number | 是 | 0-10 | 变焦级别，0 为无缩放，10 为最大 |
 
 **你要返回：**
 
@@ -1012,6 +1124,12 @@ Content-Type: application/json
   }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `level` | number | 当前实际变焦级别 |
 
 **curl 自测：**
 
@@ -1136,36 +1254,76 @@ curl -s "http://192.168.10.1:8080/api/v1/media/files?type=video_event&page=1&pag
 
 **优先级：P1**
 
+> **设计思路：** 缩略图用静态 HTTP URL 直接访问，不走 REST API 接口。这样做的好处是 App 端可以直接把 URL 传给 `Image.network()` / `CachedNetworkImage` 等图片库，库自带缓存、并发加载、占位图等能力，不需要额外封装。HDV CAM 原版也是这么做的（`/thumb/mnt/DCIM/...`）。
+
+#### URL 格式
+
 ```
-GET /api/v1/media/thumbnail?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+http://192.168.10.1:8080/thumb/<文件路径去掉开头斜杠>.jpg
 ```
 
-#### 请求参数
+#### 对应关系（视频和照片都有缩略图）
 
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `path` | string | 是 | 文件完整路径（从文件列表获取） |
+| 原文件路径 | 缩略图 URL |
+|---|---|
+| `/mnt/DCIM/Normal/VID_20260522_143000.MP4` | `http://192.168.10.1:8080/thumb/mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg` |
+| `/mnt/DCIM/Event/EVT_20260522_143000.MP4` | `http://192.168.10.1:8080/thumb/mnt/DCIM/Event/EVT_20260522_143000.MP4.jpg` |
+| `/mnt/DCIM/Photo/IMG_20260522_143500.jpg` | `http://192.168.10.1:8080/thumb/mnt/DCIM/Photo/IMG_20260522_143500.jpg.jpg` |
+
+**规则：** URL 路径 = `/thumb/` + 原文件 path 去掉开头 `/` + `.jpg`
 
 #### 你要返回
 
-- **Content-Type**: `image/jpeg`
-- **Body**: JPEG 图片二进制数据
-- **建议尺寸**: 320 × 240
+| 响应头 | 值 |
+|---|---|
+| **Content-Type** | `image/jpeg` |
+| **Content-Length** | 缩略图文件大小（字节） |
+| **Cache-Control** | `public, max-age=86400`（建议，让 App 图片库缓存） |
+| **Body** | JPEG 图片二进制数据 |
 
-#### 实现建议
+#### 缩略图规格
 
-- 拍照/录像时同步生成缩略图，保存到 `/mnt/DCIM/.thumbnails/` 目录
-- 缩略图命名：原文件名 + `.thumb.jpg`
-- 如果缩略图不存在，返回一张默认占位图
+| 参数 | 值 |
+|---|---|
+| 格式 | JPEG |
+| 建议尺寸 | 320 × 240（保持原始宽高比） |
+| 建议质量 | 75%（平衡大小和清晰度） |
+| 单张大小 | 10-30 KB |
+
+#### 你要做的事
+
+1. **录像停止时**：从视频文件提取一帧（建议第 1 秒），生成缩略图
+2. **拍照完成时**：对原图做缩放，生成缩略图
+3. **缩略图存储路径**：`/mnt/DCIM/.thumbnails/` 目录，命名为 `原文件名.jpg`
+   - 视频：`/mnt/DCIM/.thumbnails/VID_20260522_143000.MP4.jpg`
+   - 照片：`/mnt/DCIM/.thumbnails/IMG_20260522_143500.jpg.jpg`
+4. **HTTP 路由映射**：收到 `/thumb/mnt/DCIM/Normal/VID_xxx.MP4.jpg` 请求时，读取 `/mnt/DCIM/.thumbnails/VID_xxx.MP4.jpg` 返回
+5. **缩略图不存在时**：返回一张内置的默认占位图（灰色或带相机图标的 JPEG）
+
+#### 路由实现伪代码
+
+```c
+// HTTP 请求：GET /thumb/mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg
+// 提取路径：mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg
+// 取文件名：VID_20260522_143000.MP4.jpg
+// 读取文件：/mnt/DCIM/.thumbnails/VID_20260522_143000.MP4.jpg
+// 返回 JPEG 二进制
+```
 
 **curl 自测：**
 
 ```bash
-# 下载缩略图
-curl -s -o thumb.jpg "http://192.168.10.1:8080/api/v1/media/thumbnail?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4"
+# 视频缩略图
+curl -s -o thumb_video.jpg "http://192.168.10.1:8080/thumb/mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg"
+ls -la thumb_video.jpg   # 应该 10-30KB
 
-# 查看文件大小确认非空
-ls -la thumb.jpg
+# 照片缩略图
+curl -s -o thumb_photo.jpg "http://192.168.10.1:8080/thumb/mnt/DCIM/Photo/IMG_20260522_143500.jpg.jpg"
+ls -la thumb_photo.jpg   # 应该 10-30KB
+
+# 验证 Content-Type
+curl -sI "http://192.168.10.1:8080/thumb/mnt/DCIM/Normal/VID_20260522_143000.MP4.jpg" | grep -i content-type
+# 期望：Content-Type: image/jpeg
 ```
 
 ---

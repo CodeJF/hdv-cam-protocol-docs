@@ -379,26 +379,26 @@ reason 取值：`user_request`（用户删除）、`loop_overwrite`（循环覆�
 
 #### 事件汇总表
 
-| event | 分类 | 优先级 |
-|---|---|---|
-| `record_started` | 录像 | P0 |
-| `record_stopped` | 录像 | P0 |
-| `record_error` | 录像 | P0 |
-| `capture_done` | 拍照 | P0 |
-| `capture_error` | 拍照 | P0 |
-| `sd_inserted` | SD 卡 | P0 |
-| `sd_removed` | SD 卡 | P0 |
-| `sd_full` | SD 卡 | P1 |
-| `sd_error` | SD 卡 | P1 |
-| `mode_changed` | 模式 | P1 |
-| `battery_changed` | 电池 | P1 |
-| `battery_low` | 电池 | P1 |
-| `battery_exhausted` | 电池 | P1 |
-| `device_ready` | 系统 | P0 |
-| `device_busy` | 系统 | P1 |
-| `device_idle` | 系统 | P1 |
-| `device_shutdown` | 系统 | P1 |
-| `file_deleted` | 文件 | P1 |
+| event | 分类 | 含义 | 附加字段 | 你要做的 | 优先级 |
+|---|---|---|---|---|---|
+| `record_started` | 录像 | 开始录像 | `mode`, `timestamp` | 录像按钮切为"停止"，显示录像计时 | P0 |
+| `record_stopped` | 录像 | 停止录像 | `path`, `duration`, `size` | 录像按钮切为"开始" | P0 |
+| `record_error` | 录像 | 录像异常中断 | `reason` | 弹窗提示错误原因，恢复录像按钮 | P0 |
+| `capture_done` | 拍照 | 拍照成功 | `path`, `size` | 显示"拍照成功"提示 | P0 |
+| `capture_error` | 拍照 | 拍照失败 | `reason` | 弹窗提示错误原因 | P0 |
+| `sd_inserted` | SD 卡 | SD 卡插入 | `totalMB`, `freeMB` | 刷新存储信息，隐藏"无卡"提示 | P0 |
+| `sd_removed` | SD 卡 | SD 卡拔出 | 无 | 显示"请插入 SD 卡"，禁用录像/拍照 | P0 |
+| `sd_full` | SD 卡 | SD 卡已满 | `freeMB` | 提示"存储空间不足" | P1 |
+| `sd_error` | SD 卡 | SD 卡异常 | `reason` | 弹窗提示 SD 卡异常 | P1 |
+| `mode_changed` | 模式 | 工作模式切换 | `mode`, `modeIndex` | 刷新模式 UI，重新加载菜单 | P1 |
+| `battery_changed` | 电池 | 电量变化 | `level`, `charging` | 更新电量图标 | P1 |
+| `battery_low` | 电池 | 低电量警告（20%/10%） | `level` | 显示低电量警告 | P1 |
+| `battery_exhausted` | 电池 | 即将关机（<5%） | `level`, `shutdownInSeconds` | 弹窗"设备即将关机"，保存状态 | P1 |
+| `device_ready` | 系统 | 设备就绪 | `firmware`, `deviceName` | 确认连接成功，进入主界面 | P0 |
+| `device_busy` | 系统 | 设备忙（耗时操作中） | `action` | 显示 loading，禁用操作按钮 | P1 |
+| `device_idle` | 系统 | 耗时操作完成 | `action` | 隐藏 loading，恢复操作按钮 | P1 |
+| `device_shutdown` | 系统 | 设备即将关机 | `reason`, `delaySeconds` | 弹窗提示，断开连接 | P1 |
+| `file_deleted` | 文件 | 文件已删除 | `path`, `reason` | 从文件列表移除该文件 | P1 |
 
 ### 4.3 完整实现（Dart）
 

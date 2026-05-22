@@ -3,11 +3,36 @@
 ## 仓库结构
 
 ```
-├── api-spec/               ← 我们的接口协议（开发对接用这个）
-│   ├── qz-api-embedded.md      嵌入式工程师看这个
-│   └── qz-api-app.md           App 工程师看这个
+├── api-spec/                  ← 我们的接口协议（开发对接用这个）
+│   ├── embedded/                  嵌入式工程师看这个目录
+│   │   ├── README.md                  导航目录
+│   │   ├── architecture.md            网络架构 + 响应格式
+│   │   ├── tcp-heartbeat.md           TCP 心跳服务（18 种事件推送）
+│   │   ├── rtsp-preview.md            RTSP 预览服务
+│   │   ├── device-info.md             设备信息接口（4 个）
+│   │   ├── camera-control.md          相机控制接口（8 个）
+│   │   ├── media-files.md             媒体文件接口（列表、缩略图、在线播放、删除）
+│   │   ├── settings.md                设置接口（6 个）
+│   │   ├── work-modes.md              工作模式 + 文件存储 + 命名
+│   │   ├── boot-sequence.md           启动顺序
+│   │   ├── test-script.md             curl 自测脚本
+│   │   └── error-codes.md             错误码表
+│   │
+│   └── app/                       App 工程师看这个目录
+│       ├── README.md                  导航目录 + 接口一览
+│       ├── connection.md              连接识别 + 响应格式 + HTTP 封装
+│       ├── tcp-heartbeat.md           TCP 心跳客户端（Dart 实现 + UI 示例）
+│       ├── rtsp-preview.md            RTSP 预览（fijkplayer / media_kit）
+│       ├── device-info.md             设备信息接口（4 个）
+│       ├── camera-control.md          相机控制接口（8 个）
+│       ├── media-files.md             媒体文件（在线播放 + 下载 + 相册页示例）
+│       ├── settings.md                设置接口 + 设置页示例
+│       ├── work-modes.md              工作模式定义（Dart 枚举）
+│       ├── init-flow.md               初始化流程 + 页面对应
+│       ├── mock-data.md               Mock 数据集
+│       └── error-handling.md          错误码与处理
 │
-├── hdv-cam-reference/      ← HDV CAM 逆向分析（参考资料，不直接用）
+├── hdv-cam-reference/         ← HDV CAM 逆向分析（参考资料，不直接用）
 │   ├── app-newCam-release-technical-analysis.md
 │   ├── qz-protocol-overview.md
 │   ├── qz-api-contract.md
@@ -19,7 +44,7 @@
 │   ├── mstar-protocol.md
 │   └── yz-protocol.md
 │
-└── README.md               ← 你正在看的这个
+└── README.md                  ← 你正在看的这个
 ```
 
 ---
@@ -30,29 +55,31 @@
 
 你是 Server 端，实现所有 REST API 接口。
 
-**看这个文档：** [api-spec/qz-api-embedded.md](./api-spec/qz-api-embedded.md)
+**入口：** [api-spec/embedded/README.md](./api-spec/embedded/README.md)
 
-包含：
-- 全部 22 个 REST API 接口的请求/响应格式
-- TCP 心跳服务实现
-- RTSP 预览服务要求
-- curl 自测命令 + 一键验证脚本
-- 错误码表
+按优先级建议的阅读顺序：
+1. [网络架构与响应格式](./api-spec/embedded/architecture.md) — 先了解整体架构
+2. [TCP 心跳服务](./api-spec/embedded/tcp-heartbeat.md) — P0，App 靠这个判断设备在线
+3. [RTSP 预览服务](./api-spec/embedded/rtsp-preview.md) — P0，实时视频流
+4. [设备信息](./api-spec/embedded/device-info.md) + [相机控制](./api-spec/embedded/camera-control.md) — 核心接口
+5. [媒体文件](./api-spec/embedded/media-files.md) — 文件列表、缩略图、在线播放（Range 请求）
+6. [设置](./api-spec/embedded/settings.md) — 菜单、Wi-Fi、时间同步
+7. [curl 自测脚本](./api-spec/embedded/test-script.md) — 开发完跑一遍验证
 
 ### App 工程师
 
 你是 Client 端，调用所有 REST API 接口。
 
-**看这个文档：** [api-spec/qz-api-app.md](./api-spec/qz-api-app.md)
+**入口：** [api-spec/app/README.md](./api-spec/app/README.md)
 
-包含：
-- 全部 22 个 REST API 的调用方式
-- 每个接口的 Dart 数据模型和调用示例
-- 相册浏览、查看图片、下载视频的完整流程
-- TCP 心跳客户端实现
-- RTSP 预览接入（fijkplayer / media_kit）
-- 完整页面代码示例（相册页、设置页）
-- Mock 数据集（设备没好之前用这个自测）
+按优先级建议的阅读顺序：
+1. [连接识别与响应格式](./api-spec/app/connection.md) — HTTP 封装、响应解析
+2. [TCP 心跳客户端](./api-spec/app/tcp-heartbeat.md) — P0，事件监听
+3. [RTSP 预览接入](./api-spec/app/rtsp-preview.md) — P0，实时预览
+4. [设备信息](./api-spec/app/device-info.md) + [相机控制](./api-spec/app/camera-control.md) — 核心接口
+5. [媒体文件](./api-spec/app/media-files.md) — 相册、在线播放视频、下载
+6. [设置](./api-spec/app/settings.md) — 菜单渲染、设置页示例
+7. [Mock 数据集](./api-spec/app/mock-data.md) — 设备没好之前用这个自测
 
 ---
 
@@ -74,9 +101,11 @@
 | POST | `/api/v1/camera/record/stop` | 停止录像 |
 | POST | `/api/v1/camera/capture` | 拍照 |
 | POST | `/api/v1/camera/mode` | 切换模式 |
+| POST | `/api/v1/camera/playback/enter` | 进入回放 |
+| POST | `/api/v1/camera/playback/exit` | 退出回放 |
 | GET | `/api/v1/media/files` | 文件列表 |
-| GET | `/api/v1/media/thumbnail` | 缩略图 |
-| GET | `/api/v1/media/file` | 下载文件 |
+| GET | `/thumb/<path>.jpg` | 缩略图 |
+| GET | `/api/v1/media/file` | 在线查看/下载文件 |
 | DELETE | `/api/v1/media/file` | 删除文件 |
 | GET | `/api/v1/settings/menus` | 菜单设置 |
 | POST | `/api/v1/settings/wifi` | Wi-Fi 设置 |

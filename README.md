@@ -1,65 +1,108 @@
-# HDV CAM 协议分析文档
+# 运动相机项目 — 协议文档
 
-基于 HDV CAM App（Android `app-newCam-release.apk` + iOS `HDV CAM 1.3.3.ipa`）逆向分析整理的完整协议技术文档。
+## 仓库结构
 
-## 文档索引
+```
+├── api-spec/               ← 我们的接口协议（开发对接用这个）
+│   ├── qz-api-embedded.md      嵌入式工程师看这个
+│   └── qz-api-app.md           App 工程师看这个
+│
+├── hdv-cam-reference/      ← HDV CAM 逆向分析（参考资料，不直接用）
+│   ├── app-newCam-release-technical-analysis.md
+│   ├── qz-protocol-overview.md
+│   ├── qz-api-contract.md
+│   ├── qz-media-model.md
+│   ├── qz-replica-plan.md
+│   ├── qz-interface-specification.md
+│   ├── qz-embedded-engineer-guide.md
+│   ├── qz-flutter-app-guide.md
+│   ├── mstar-protocol.md
+│   └── yz-protocol.md
+│
+└── README.md               ← 你正在看的这个
+```
 
-### 总览
+---
+
+## 开工看这里
+
+### 嵌入式工程师
+
+你是 Server 端，实现所有 REST API 接口。
+
+**看这个文档：** [api-spec/qz-api-embedded.md](./api-spec/qz-api-embedded.md)
+
+包含：
+- 全部 22 个 REST API 接口的请求/响应格式
+- TCP 心跳服务实现
+- RTSP 预览服务要求
+- curl 自测命令 + 一键验证脚本
+- 错误码表
+
+### App 工程师
+
+你是 Client 端，调用所有 REST API 接口。
+
+**看这个文档：** [api-spec/qz-api-app.md](./api-spec/qz-api-app.md)
+
+包含：
+- 全部 22 个 REST API 的调用方式
+- 每个接口的 Dart 数据模型和调用示例
+- 相册浏览、查看图片、下载视频的完整流程
+- TCP 心跳客户端实现
+- RTSP 预览接入（fijkplayer / media_kit）
+- 完整页面代码示例（相册页、设置页）
+- Mock 数据集（设备没好之前用这个自测）
+
+---
+
+## 接口协议概览
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| TCP 心跳 | `9999` | App 连上后每 500ms 发心跳，设备推送事件 |
+| HTTP REST API | `8080` | 全部控制/查询/设置接口，统一 JSON |
+| RTSP 预览 | `8554` | 实时视频流 `rtsp://192.168.10.1:8554/ch00` |
+
+| 方法 | 接口 | 功能 |
+|---|---|---|
+| GET | `/api/v1/device/info` | 设备信息 |
+| GET | `/api/v1/device/storage` | 存储卡 |
+| GET | `/api/v1/device/battery` | 电池 |
+| GET | `/api/v1/camera/status` | 录像状态 + 模式 |
+| POST | `/api/v1/camera/record/start` | 开始录像 |
+| POST | `/api/v1/camera/record/stop` | 停止录像 |
+| POST | `/api/v1/camera/capture` | 拍照 |
+| POST | `/api/v1/camera/mode` | 切换模式 |
+| GET | `/api/v1/media/files` | 文件列表 |
+| GET | `/api/v1/media/thumbnail` | 缩略图 |
+| GET | `/api/v1/media/file` | 下载文件 |
+| DELETE | `/api/v1/media/file` | 删除文件 |
+| GET | `/api/v1/settings/menus` | 菜单设置 |
+| POST | `/api/v1/settings/wifi` | Wi-Fi 设置 |
+| POST | `/api/v1/settings/datetime` | 时间同步 |
+
+---
+
+## HDV CAM 参考资料
+
+`hdv-cam-reference/` 文件夹是对 HDV CAM App（Android + iOS）的逆向分析文档。我们的接口协议参考了这些分析结果，但做了以下优化：
+
+| 对比项 | HDV CAM 原协议 | 我们的新协议 |
+|---|---|---|
+| 接口风格 | `cmd=0x7d1` 命令码 | REST API `/api/v1/device/info` |
+| 数据格式 | JSON + XML 混合 | 全部 JSON |
+| 文件列表 | XML 返回 | JSON 返回 |
+| 菜单系统 | 3 次请求拼装 | 1 次请求全部返回 |
+| HTTP 端口 | 8082 | 8080 |
+| 响应格式 | 无统一外壳 | 统一 `{code, msg, data}` |
+
+如果需要了解原协议细节或对比参考：
 
 | 文档 | 说明 |
 |---|---|
-| [app-newCam-release-technical-analysis.md](./app-newCam-release-technical-analysis.md) | **主入口** — App 架构、三套协议横向对比、iOS 对照分析 |
-
-### QZ 协议族（重点）
-
-| 文档 | 说明 |
-|---|---|
-| [qz-protocol-overview.md](./qz-protocol-overview.md) | 协议总览 — 网络形态、4 条链路分层、初始化顺序 |
-| [qz-api-contract.md](./qz-api-contract.md) | API 合同 — 16 个命令码、请求模板、返回结构 |
-| [qz-media-model.md](./qz-media-model.md) | 媒体与菜单模型 — 文件列表、菜单 XML、翻译资源、8 种工作模式 |
-| [qz-replica-plan.md](./qz-replica-plan.md) | 复刻实施计划 — 阶段目标、验收标准、排期、任务拆分 |
-
-### 其他协议族
-
-| 文档 | 说明 |
-|---|---|
-| [mstar-protocol.md](./mstar-protocol.md) | MStar 协议 — CGI 接口、属性树 |
-| [yz-protocol.md](./yz-protocol.md) | YZ 协议 — REST 接口、JSON 响应、curl 示例 |
-
-### REST API 接口协议（开工用，拿到就干活）
-
-| 文档 | 给谁看 |
-|---|---|
-| [qz-api-embedded.md](./qz-api-embedded.md) | **嵌入式工程师** — 你是 Server 端，按文档实现所有接口，附 curl 自测 |
-| [qz-api-app.md](./qz-api-app.md) | **App 工程师** — 你是 Client 端，按文档调用接口，附 Dart 代码和 Mock 数据 |
-
-### 逆向分析参考（原协议）
-
-| 文档 | 说明 |
-|---|---|
-| [qz-interface-specification.md](./qz-interface-specification.md) | 原始 QZ 协议接口规范（命令码风格，供参考） |
-
-### 开发指南
-
-| 文档 | 适合读者 |
-|---|---|
-| [qz-embedded-engineer-guide.md](./qz-embedded-engineer-guide.md) | 嵌入式/固件工程师 — 原协议实现参考 |
-| [qz-flutter-app-guide.md](./qz-flutter-app-guide.md) | Flutter App 工程师 — 原协议接入参考 |
-
-## 三套协议族
-
-HDV CAM App 内置 3 套设备协议，根据手机连接的热点网关 IP 自动切换：
-
-| 协议 | 设备 IP | 风格 | 复杂度 |
-|---|---|---|---|
-| MStar | `192.168.1.1` | CGI 属性树 | 中 |
-| **QZ** | `192.168.10.1` | 命令码 + XML + TCP/UDP | 高 |
-| YZ | `192.168.169.1` | REST JSON | 低 |
-
-## 怎么看
-
-- **刚接触项目？** 从 [主文档](./app-newCam-release-technical-analysis.md) 开始，了解全貌
-- **嵌入式要开工？** 看 [qz-api-embedded.md](./qz-api-embedded.md)，你是 Server 端
-- **App 要开工？** 看 [qz-api-app.md](./qz-api-app.md)，你是 Client 端
-- **排期派活？** 看 [复刻计划](./qz-replica-plan.md)
-- **想快速抓包验证？** 先从 [YZ 协议](./yz-protocol.md) 开始，接口最直白
+| [主分析文档](./hdv-cam-reference/app-newCam-release-technical-analysis.md) | App 架构、三套协议对比 |
+| [QZ 协议总览](./hdv-cam-reference/qz-protocol-overview.md) | 4 条链路、初始化流程 |
+| [QZ 原始接口](./hdv-cam-reference/qz-interface-specification.md) | 原命令码风格的完整接口定义 |
+| [QZ 媒体模型](./hdv-cam-reference/qz-media-model.md) | 文件列表、菜单 XML、工作模式 |
+| [QZ 复刻计划](./hdv-cam-reference/qz-replica-plan.md) | 阶段目标、排期、任务拆分 |

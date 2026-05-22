@@ -1,0 +1,2275 @@
+# QZ REST API — App 端开发规范
+
+> **版本**：v1.0.0 | **日期**：2026-05-22 | **状态**：已定稿，可开工  
+> **你的角色**：你是 Client 端，负责调用所有 API 接口  
+> **对应文档**：嵌入式端看 [qz-api-embedded.md](./qz-api-embedded.md)
+
+---
+
+## 目录
+
+- [1. 总览](#1-总览)
+- [2. 连接与识别](#2-连接与识别)
+- [3. 统一响应格式](#3-统一响应格式)
+- [4. TCP 心跳客户端（端口 9999）](#4-tcp-心跳客户端端口-9999)
+- [5. RTSP 预览接入（端口 8554）](#5-rtsp-预览接入端口-8554)
+- [6. REST API — 设备信息](#6-rest-api--设备信息)
+- [7. REST API — 相机控制](#7-rest-api--相机控制)
+- [8. REST API — 媒体文件（查看、下载、删除）](#8-rest-api--媒体文件查看下载删除)
+- [9. REST API — 设置](#9-rest-api--设置)
+- [10. 工作模式定义](#10-工作模式定义)
+- [11. 连接初始化完整流程](#11-连接初始化完整流程)
+- [12. 页面与 API 对应关系](#12-页面与-api-对应关系)
+- [13. 完整 Mock 数据集](#13-完整-mock-数据集)
+- [14. 错误码与处理](#14-错误码与处理)
+
+---
+
+## 1. 总览
+
+### 你要对接什么
+
+| 服务 | 地址 | 你要做的 |
+|---|---|---|
+| TCP 心跳 | `192.168.10.1:9999` | 连接后每 500ms 发送心跳，接收设备事件 |
+| HTTP REST API | `http://192.168.10.1:8080` | 调用 REST 接口控制相机 |
+| RTSP 预览 | `rtsp://192.168.10.1:8554/ch00` | 接入实时视频流 |
+
+### 全部接口一览
+
+| 方法 | 路径 | 功能 | 优先级 |
+|---|---|---|---|
+| GET | `/api/v1/device/info` | 设备信息 | P0 |
+| GET | `/api/v1/device/storage` | 存储卡信息 | P0 |
+| GET | `/api/v1/device/battery` | 电池信息 | P1 |
+| GET | `/api/v1/device/check` | 健康检查 | P1 |
+| GET | `/api/v1/camera/status` | 相机状态（录像、模式） | P0 |
+| POST | `/api/v1/camera/record/start` | 开始录像 | P0 |
+| POST | `/api/v1/camera/record/stop` | 停止录像 | P0 |
+| POST | `/api/v1/camera/capture` | 拍照 | P0 |
+| POST | `/api/v1/camera/mode` | 切换工作模式 | P1 |
+| POST | `/api/v1/camera/playback/enter` | 进入回放 | P1 |
+| POST | `/api/v1/camera/playback/exit` | 退出回放 | P1 |
+| POST | `/api/v1/camera/zoom` | 变焦 | P2 |
+| GET | `/api/v1/media/files` | 文件列表 | P1 |
+| GET | `/api/v1/media/thumbnail` | 缩略图 | P1 |
+| GET | `/api/v1/media/file` | 下载/查看文件 | P1 |
+| DELETE | `/api/v1/media/file` | 删除文件 | P1 |
+| GET | `/api/v1/settings/menus` | 获取菜单（含翻译和当前值） | P1 |
+| POST | `/api/v1/settings/menu/value` | 修改菜单选项 | P1 |
+| POST | `/api/v1/settings/wifi` | 设置 Wi-Fi | P1 |
+| POST | `/api/v1/settings/datetime` | 同步时间 | P1 |
+| POST | `/api/v1/settings/format` | 格式化 SD 卡 | P2 |
+| POST | `/api/v1/settings/reset` | 恢复出厂设置 | P2 |
+
+---
+
+## 2. 连接与识别
+
+### 2.1 设备识别
+
+App 通过手机当前连接的 **Wi-Fi 网关 IP** 判断设备类型：
+
+| 网关 IP | 协议 |
+|---|---|
+| `192.168.10.1` | QZ（本文档） |
+| `192.168.1.1` | MStar |
+| `192.168.169.1` | YZ |
+
+### 2.2 检测代码（Flutter）
+
+```dart
+import 'package:network_info_plus/network_info_plus.dart';
+
+class DeviceDetector {
+  static const String qzGateway = '192.168.10.1';
+
+  static Future<bool> isQZDeviceConnected() async {
+    final info = NetworkInfo();
+    final gateway = await info.getWifiGatewayIP();
+    return gateway == qzGateway;
+  }
+}
+```
+
+---
+
+## 3. 统一响应格式
+
+**所有 REST API 都返回这个格式。**
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": { ... }
+}
+```
+
+### 解析基类（Dart）
+
+```dart
+class ApiResponse<T> {
+  final int code;
+  final String msg;
+  final T? data;
+
+  bool get isSuccess => code == 0;
+
+  ApiResponse({required this.code, required this.msg, this.data});
+
+  factory ApiResponse.fromJson(
+    Map<String, dynamic> json,
+    T Function(dynamic)? fromData,
+  ) {
+    return ApiResponse(
+      code: json['code'] as int,
+      msg: json['msg'] as String,
+      data: json['data'] != null && fromData != null
+          ? fromData(json['data'])
+          : null,
+    );
+  }
+}
+```
+
+### HTTP 基础封装（Dart）
+
+```dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class QZHttpClient {
+  static const String baseUrl = 'http://192.168.10.1:8080';
+  final http.Client _client = http.Client();
+
+  /// GET 请求
+  Future<ApiResponse<T>> get<T>(
+    String path, {
+    Map<String, String>? params,
+    T Function(dynamic)? fromData,
+  }) async {
+    var uri = Uri.parse('$baseUrl$path');
+    if (params != null) {
+      uri = uri.replace(queryParameters: params);
+    }
+    final response = await _client.get(uri).timeout(Duration(seconds: 5));
+    final json = jsonDecode(response.body);
+    return ApiResponse.fromJson(json, fromData);
+  }
+
+  /// POST 请求
+  Future<ApiResponse<T>> post<T>(
+    String path, {
+    Map<String, dynamic>? body,
+    T Function(dynamic)? fromData,
+  }) async {
+    final uri = Uri.parse('$baseUrl$path');
+    final response = await _client.post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: body != null ? jsonEncode(body) : null,
+    ).timeout(Duration(seconds: 5));
+    final json = jsonDecode(response.body);
+    return ApiResponse.fromJson(json, fromData);
+  }
+
+  /// DELETE 请求
+  Future<ApiResponse<T>> delete<T>(
+    String path, {
+    Map<String, String>? params,
+    T Function(dynamic)? fromData,
+  }) async {
+    var uri = Uri.parse('$baseUrl$path');
+    if (params != null) {
+      uri = uri.replace(queryParameters: params);
+    }
+    final response = await _client.delete(uri).timeout(Duration(seconds: 5));
+    final json = jsonDecode(response.body);
+    return ApiResponse.fromJson(json, fromData);
+  }
+
+  void dispose() => _client.close();
+}
+```
+
+---
+
+## 4. TCP 心跳客户端（端口 9999）
+
+**优先级：P0 — 连上设备后第一件事就是建立心跳**
+
+### 4.1 协议
+
+| 方向 | 内容 | 频率 |
+|---|---|---|
+| App → 设备 | `S:100.0`（UTF-8 字符串） | 每 500ms |
+| 设备 → App | 事件 JSON（每行一条）| 状态变化时 |
+
+### 4.2 事件类型
+
+| event 值 | 含义 | 你要做的 |
+|---|---|---|
+| `record_started` | 录像已开始 | 刷新录像按钮状态 |
+| `record_stopped` | 录像已停止 | 刷新录像按钮状态 |
+| `capture_done` | 拍照完成 | 刷新相册、显示提示 |
+| `sd_card_removed` | SD 卡拔出 | 提示用户 |
+| `sd_card_inserted` | SD 卡插入 | 刷新存储信息 |
+| `mode_changed` | 模式已切换 | 刷新模式 UI |
+| `battery_low` | 低电量 | 显示低电量警告 |
+
+### 4.3 完整实现（Dart）
+
+```dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+class QZEventSocket {
+  Socket? _socket;
+  Timer? _heartbeatTimer;
+  final _eventController = StreamController<Map<String, dynamic>>.broadcast();
+
+  /// 事件流 — UI 层监听此流
+  Stream<Map<String, dynamic>> get eventStream => _eventController.stream;
+
+  /// 连接设备
+  Future<bool> connect() async {
+    try {
+      _socket = await Socket.connect(
+        '192.168.10.1',
+        9999,
+        timeout: Duration(milliseconds: 5000),
+      );
+
+      // 监听设备推送的事件
+      _socket!
+          .transform(utf8.decoder)
+          .transform(LineSplitter())
+          .listen(
+            (line) => _onEvent(line),
+            onError: (e) => _onError(e),
+            onDone: () => _onDisconnect(),
+          );
+
+      // 启动心跳
+      _startHeartbeat();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(
+      Duration(milliseconds: 500),
+      (_) {
+        try {
+          _socket?.write('S:100.0');
+        } catch (e) {
+          _onError(e);
+        }
+      },
+    );
+  }
+
+  void _onEvent(String line) {
+    if (line.trim().isEmpty || line == 'OK') return;
+    try {
+      final event = jsonDecode(line) as Map<String, dynamic>;
+      _eventController.add(event);
+    } catch (e) {
+      // 非 JSON 数据忽略（如心跳回复 "OK"）
+    }
+  }
+
+  void _onError(dynamic error) {
+    _eventController.add({'event': 'connection_error', 'error': '$error'});
+  }
+
+  void _onDisconnect() {
+    _eventController.add({'event': 'disconnected'});
+    // 尝试重连
+    _reconnect();
+  }
+
+  Future<void> _reconnect() async {
+    _heartbeatTimer?.cancel();
+    await _socket?.close();
+    _socket = null;
+
+    for (int i = 0; i < 3; i++) {
+      await Future.delayed(Duration(seconds: 2));
+      if (await connect()) return;
+    }
+    _eventController.add({'event': 'reconnect_failed'});
+  }
+
+  Future<void> disconnect() async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    await _socket?.close();
+    _socket = null;
+  }
+
+  void dispose() {
+    disconnect();
+    _eventController.close();
+  }
+}
+```
+
+### 4.4 UI 层监听示例
+
+```dart
+class PreviewPage extends StatefulWidget { ... }
+
+class _PreviewPageState extends State<PreviewPage> {
+  late QZEventSocket _eventSocket;
+
+  @override
+  void initState() {
+    super.initState();
+    _eventSocket = QZEventSocket();
+    _eventSocket.connect();
+
+    _eventSocket.eventStream.listen((event) {
+      switch (event['event']) {
+        case 'record_started':
+          setState(() => _isRecording = true);
+          break;
+        case 'record_stopped':
+          setState(() => _isRecording = false);
+          break;
+        case 'capture_done':
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('拍照成功')),
+          );
+          break;
+        case 'battery_low':
+          _showBatteryWarning(event['level']);
+          break;
+      }
+    });
+  }
+}
+```
+
+---
+
+## 5. RTSP 预览接入（端口 8554）
+
+**优先级：P0**
+
+### 5.1 流地址
+
+```
+rtsp://192.168.10.1:8554/ch00
+```
+
+### 5.2 推荐方案
+
+| 方案 | 包名 | 推荐度 |
+|---|---|---|
+| fijkplayer | `fijkplayer` | ★★★ 基于 IJK，兼容性好 |
+| media_kit | `media_kit` + `media_kit_video` | ★★★ 基于 MPV，跨平台 |
+| flutter_vlc_player | `flutter_vlc_player` | ★★ 稳定但包体大 |
+
+### 5.3 接入示例（fijkplayer）
+
+```dart
+import 'package:fijkplayer/fijkplayer.dart';
+
+class PreviewController {
+  final FijkPlayer _player = FijkPlayer();
+
+  FijkPlayer get player => _player;
+
+  Future<void> start() async {
+    // 关键参数
+    await _player.setOption(FijkOption.formatCategory, "rtsp_transport", "tcp");
+    await _player.setOption(FijkOption.playerCategory, "packet-buffering", 0);
+    await _player.setOption(FijkOption.playerCategory, "framedrop", 1);
+    await _player.setOption(FijkOption.playerCategory, "mediacodec", 1);
+
+    await _player.setDataSource(
+      'rtsp://192.168.10.1:8554/ch00',
+      autoPlay: true,
+    );
+  }
+
+  Future<void> stop() async {
+    await _player.stop();
+    await _player.reset();
+  }
+
+  void dispose() {
+    _player.release();
+  }
+}
+```
+
+### 5.4 接入示例（media_kit）
+
+```dart
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+
+class PreviewController {
+  late final Player _player;
+  late final VideoController videoController;
+
+  PreviewController() {
+    _player = Player();
+    videoController = VideoController(_player);
+  }
+
+  Future<void> start() async {
+    await _player.open(Media('rtsp://192.168.10.1:8554/ch00'));
+  }
+
+  Future<void> stop() async {
+    await _player.stop();
+  }
+
+  void dispose() {
+    _player.dispose();
+  }
+}
+```
+
+### 5.5 在页面中使用
+
+```dart
+// fijkplayer
+FijkView(player: _previewController.player)
+
+// media_kit
+Video(controller: _previewController.videoController)
+```
+
+---
+
+## 6. REST API — 设备信息
+
+Base URL：`http://192.168.10.1:8080`
+
+---
+
+### 6.1 获取设备信息
+
+**优先级：P0**
+
+```
+GET /api/v1/device/info
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "deviceId": 1,
+    "deviceName": "QZ-CAM-001",
+    "model": "QZ-4K",
+    "firmware": "V1.0.0",
+    "serialNumber": "SN20260001"
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class DeviceInfo {
+  final int deviceId;
+  final String deviceName;
+  final String model;
+  final String firmware;
+  final String serialNumber;
+
+  DeviceInfo.fromJson(Map<String, dynamic> json)
+      : deviceId = json['deviceId'],
+        deviceName = json['deviceName'],
+        model = json['model'],
+        firmware = json['firmware'],
+        serialNumber = json['serialNumber'];
+}
+```
+
+#### 调用示例
+
+```dart
+final resp = await http.get<DeviceInfo>(
+  '/api/v1/device/info',
+  fromData: (d) => DeviceInfo.fromJson(d),
+);
+if (resp.isSuccess) {
+  print('设备名: ${resp.data!.deviceName}');
+  print('固件版本: ${resp.data!.firmware}');
+}
+```
+
+---
+
+### 6.2 获取存储卡信息
+
+**优先级：P0**
+
+```
+GET /api/v1/device/storage
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "inserted": true,
+    "totalMB": 127512,
+    "freeMB": 92341,
+    "usedMB": 35171
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class StorageInfo {
+  final bool inserted;
+  final int totalMB;
+  final int freeMB;
+  final int usedMB;
+
+  StorageInfo.fromJson(Map<String, dynamic> json)
+      : inserted = json['inserted'],
+        totalMB = json['totalMB'],
+        freeMB = json['freeMB'],
+        usedMB = json['usedMB'];
+
+  /// 已用百分比（0-100）
+  double get usedPercent => totalMB > 0 ? (usedMB / totalMB * 100) : 0;
+
+  /// 格式化显示
+  String get totalDisplay => '${(totalMB / 1024).toStringAsFixed(1)} GB';
+  String get freeDisplay => '${(freeMB / 1024).toStringAsFixed(1)} GB';
+}
+```
+
+#### 调用示例
+
+```dart
+final resp = await http.get<StorageInfo>(
+  '/api/v1/device/storage',
+  fromData: (d) => StorageInfo.fromJson(d),
+);
+if (resp.isSuccess) {
+  final storage = resp.data!;
+  if (!storage.inserted) {
+    showDialog('请插入 SD 卡');
+  } else {
+    print('剩余: ${storage.freeDisplay}');
+  }
+}
+```
+
+---
+
+### 6.3 获取电池信息
+
+**优先级：P1**
+
+```
+GET /api/v1/device/battery
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "level": 85,
+    "charging": false,
+    "full": false
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class BatteryInfo {
+  final int level;
+  final bool charging;
+  final bool full;
+
+  BatteryInfo.fromJson(Map<String, dynamic> json)
+      : level = json['level'],
+        charging = json['charging'],
+        full = json['full'];
+
+  bool get isLow => level < 20;
+}
+```
+
+#### 调用示例
+
+```dart
+final resp = await http.get<BatteryInfo>(
+  '/api/v1/device/battery',
+  fromData: (d) => BatteryInfo.fromJson(d),
+);
+if (resp.isSuccess && resp.data!.isLow) {
+  showWarning('电量不足: ${resp.data!.level}%');
+}
+```
+
+---
+
+### 6.4 设备健康检查
+
+**优先级：P1**
+
+```
+GET /api/v1/device/check
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "online": true,
+    "uptime": 3600
+  }
+}
+```
+
+#### 调用示例
+
+```dart
+final resp = await http.get('/api/v1/device/check');
+if (!resp.isSuccess) {
+  showError('设备离线');
+}
+```
+
+---
+
+## 7. REST API — 相机控制
+
+---
+
+### 7.1 获取相机状态
+
+**优先级：P0**
+
+```
+GET /api/v1/camera/status
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "recording": false,
+    "mode": "NormalRecordeMode",
+    "modeIndex": 0,
+    "rtspUrl": "rtsp://192.168.10.1:8554/ch00"
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class CameraStatus {
+  final bool recording;
+  final String mode;
+  final int modeIndex;
+  final String rtspUrl;
+
+  CameraStatus.fromJson(Map<String, dynamic> json)
+      : recording = json['recording'],
+        mode = json['mode'],
+        modeIndex = json['modeIndex'],
+        rtspUrl = json['rtspUrl'];
+
+  bool get isRecordMode => modeIndex <= 3;
+  bool get isCaptureMode => modeIndex >= 4;
+}
+```
+
+#### 调用示例
+
+```dart
+final resp = await http.get<CameraStatus>(
+  '/api/v1/camera/status',
+  fromData: (d) => CameraStatus.fromJson(d),
+);
+if (resp.isSuccess) {
+  final status = resp.data!;
+  print('正在录像: ${status.recording}');
+  print('当前模式: ${status.mode}');
+}
+```
+
+---
+
+### 7.2 开始录像
+
+**优先级：P0**
+
+```
+POST /api/v1/camera/record/start
+```
+
+无请求体。
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": null
+}
+```
+
+#### 调用示例
+
+```dart
+Future<void> startRecording() async {
+  final resp = await http.post('/api/v1/camera/record/start');
+  if (resp.isSuccess) {
+    setState(() => _isRecording = true);
+  } else {
+    showError('录像启动失败: ${resp.msg}');
+  }
+}
+```
+
+---
+
+### 7.3 停止录像
+
+**优先级：P0**
+
+```
+POST /api/v1/camera/record/stop
+```
+
+无请求体。
+
+#### 调用示例
+
+```dart
+Future<void> stopRecording() async {
+  final resp = await http.post('/api/v1/camera/record/stop');
+  if (resp.isSuccess) {
+    setState(() => _isRecording = false);
+  }
+}
+```
+
+---
+
+### 7.4 拍照
+
+**优先级：P0**
+
+```
+POST /api/v1/camera/capture
+```
+
+无请求体。
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg"
+  }
+}
+```
+
+#### 调用示例
+
+```dart
+Future<void> takePhoto() async {
+  final resp = await http.post('/api/v1/camera/capture');
+  if (resp.isSuccess) {
+    final path = resp.data['path'];
+    showSnackBar('拍照成功');
+    // 可以立即用 path 获取缩略图预览
+  }
+}
+```
+
+---
+
+### 7.5 切换工作模式
+
+**优先级：P1**
+
+```
+POST /api/v1/camera/mode
+Content-Type: application/json
+
+{"mode": 4}
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "mode": "NormalCaptureMode",
+    "modeIndex": 4
+  }
+}
+```
+
+#### 调用示例
+
+```dart
+Future<void> switchMode(int modeIndex) async {
+  final resp = await http.post(
+    '/api/v1/camera/mode',
+    body: {'mode': modeIndex},
+  );
+  if (resp.isSuccess) {
+    setState(() {
+      _currentMode = resp.data['mode'];
+      _currentModeIndex = resp.data['modeIndex'];
+    });
+    // 切换模式后重新加载菜单
+    await loadMenus();
+  }
+}
+```
+
+---
+
+### 7.6 进入/退出回放模式
+
+**优先级：P1**
+
+```
+POST /api/v1/camera/playback/enter    ← 进入
+POST /api/v1/camera/playback/exit     ← 退出
+```
+
+无请求体。
+
+#### 调用示例
+
+```dart
+// 进入回放（查看相册前调用）
+await http.post('/api/v1/camera/playback/enter');
+
+// 退出回放（返回预览时调用）
+await http.post('/api/v1/camera/playback/exit');
+```
+
+---
+
+### 7.7 变焦控制
+
+**优先级：P2**
+
+```
+POST /api/v1/camera/zoom
+Content-Type: application/json
+
+{"level": 5}
+```
+
+#### 调用示例
+
+```dart
+Future<void> setZoom(int level) async {
+  await http.post('/api/v1/camera/zoom', body: {'level': level});
+}
+```
+
+---
+
+## 8. REST API — 媒体文件（查看、下载、删除）
+
+**这一章解决"如何查看相机里的视频和照片、如何下载到手机"的问题。**
+
+### 完整流程
+
+```
+App 打开相册页
+     │
+     ▼
+[1] 获取文件列表 GET /api/v1/media/files?type=photo
+     │
+     ▼
+[2] 加载缩略图   GET /api/v1/media/thumbnail?path=xxx
+     │  （每个文件一张缩略图，用于列表展示）
+     ▼
+用户点击某个文件
+     │
+     ├─ 图片 → [3a] 下载原图查看  GET /api/v1/media/file?path=xxx
+     │
+     └─ 视频 → [3b] 下载视频播放  GET /api/v1/media/file?path=xxx
+              （支持 Range 断点续传，可边下边播）
+     │
+用户长按删除
+     │
+     └─ [4] 删除文件 DELETE /api/v1/media/file?path=xxx
+```
+
+---
+
+### 8.1 获取文件列表
+
+**优先级：P1**
+
+```
+GET /api/v1/media/files?type=video_normal&page=1&pageSize=20
+```
+
+#### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `type` | string | 是 | 见下表 |
+| `page` | number | 否 | 页码（从 1 开始），默认 1 |
+| `pageSize` | number | 否 | 每页数量，默认 20 |
+
+#### type 取值
+
+| 值 | 含义 |
+|---|---|
+| `video_normal` | 普通视频 |
+| `video_event` | 事件视频（碰撞触发） |
+| `video_parking` | 停车监控视频 |
+| `photo` | 照片 |
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "total": 45,
+    "page": 1,
+    "pageSize": 20,
+    "files": [
+      {
+        "path": "/mnt/DCIM/Normal/VID_20260522_143000.MP4",
+        "name": "VID_20260522_143000.MP4",
+        "size": 52428800,
+        "time": "2026-05-22 14:30:00",
+        "duration": 120,
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "path": "/mnt/DCIM/Normal/VID_20260522_141500.MP4",
+        "name": "VID_20260522_141500.MP4",
+        "size": 26214400,
+        "time": "2026-05-22 14:15:00",
+        "duration": 60,
+        "width": 1920,
+        "height": 1080
+      }
+    ]
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class MediaFile {
+  final String path;
+  final String name;
+  final int size;
+  final String time;
+  final int? duration;  // 视频时长（秒），照片为 null
+  final int? width;
+  final int? height;
+
+  MediaFile.fromJson(Map<String, dynamic> json)
+      : path = json['path'],
+        name = json['name'],
+        size = json['size'],
+        time = json['time'],
+        duration = json['duration'],
+        width = json['width'],
+        height = json['height'];
+
+  bool get isVideo => name.toLowerCase().endsWith('.mp4') ||
+                      name.toLowerCase().endsWith('.mov');
+  bool get isPhoto => name.toLowerCase().endsWith('.jpg');
+
+  /// 缩略图 URL
+  String get thumbnailUrl =>
+    'http://192.168.10.1:8080/api/v1/media/thumbnail?path=${Uri.encodeComponent(path)}';
+
+  /// 文件下载 URL
+  String get fileUrl =>
+    'http://192.168.10.1:8080/api/v1/media/file?path=${Uri.encodeComponent(path)}';
+
+  /// 格式化文件大小
+  String get sizeDisplay {
+    if (size > 1024 * 1024 * 1024) return '${(size / 1024 / 1024 / 1024).toStringAsFixed(1)} GB';
+    if (size > 1024 * 1024) return '${(size / 1024 / 1024).toStringAsFixed(1)} MB';
+    return '${(size / 1024).toStringAsFixed(1)} KB';
+  }
+
+  /// 格式化时长
+  String get durationDisplay {
+    if (duration == null) return '';
+    final m = duration! ~/ 60;
+    final s = duration! % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+}
+
+class MediaFileList {
+  final int total;
+  final int page;
+  final int pageSize;
+  final List<MediaFile> files;
+
+  MediaFileList.fromJson(Map<String, dynamic> json)
+      : total = json['total'],
+        page = json['page'],
+        pageSize = json['pageSize'],
+        files = (json['files'] as List).map((f) => MediaFile.fromJson(f)).toList();
+
+  bool get hasMore => page * pageSize < total;
+}
+```
+
+#### 调用示例
+
+```dart
+/// 获取普通视频列表
+Future<MediaFileList> getVideoList({int page = 1}) async {
+  final resp = await http.get<MediaFileList>(
+    '/api/v1/media/files',
+    params: {
+      'type': 'video_normal',
+      'page': '$page',
+      'pageSize': '20',
+    },
+    fromData: (d) => MediaFileList.fromJson(d),
+  );
+  return resp.data!;
+}
+
+/// 获取照片列表
+Future<MediaFileList> getPhotoList({int page = 1}) async {
+  final resp = await http.get<MediaFileList>(
+    '/api/v1/media/files',
+    params: {
+      'type': 'photo',
+      'page': '$page',
+      'pageSize': '20',
+    },
+    fromData: (d) => MediaFileList.fromJson(d),
+  );
+  return resp.data!;
+}
+```
+
+---
+
+### 8.2 获取缩略图
+
+**优先级：P1**
+
+```
+GET /api/v1/media/thumbnail?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+```
+
+返回 JPEG 图片二进制数据（不是 JSON）。
+
+#### 在列表中显示缩略图
+
+```dart
+// 方式 1：直接用 Image.network
+Image.network(
+  file.thumbnailUrl,
+  width: 120,
+  height: 90,
+  fit: BoxFit.cover,
+  errorBuilder: (_, __, ___) => Icon(Icons.broken_image),
+)
+
+// 方式 2：用 cached_network_image 缓存（推荐）
+CachedNetworkImage(
+  imageUrl: file.thumbnailUrl,
+  width: 120,
+  height: 90,
+  fit: BoxFit.cover,
+  placeholder: (_, __) => CircularProgressIndicator(),
+  errorWidget: (_, __, ___) => Icon(Icons.broken_image),
+)
+```
+
+---
+
+### 8.3 查看图片
+
+**优先级：P1**
+
+```
+GET /api/v1/media/file?path=/mnt/DCIM/Photo/IMG_20260522_143500.jpg
+```
+
+返回图片二进制数据（`image/jpeg`）。
+
+#### 全屏查看图片
+
+```dart
+class PhotoViewPage extends StatelessWidget {
+  final MediaFile file;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(file.name)),
+      body: InteractiveViewer(
+        child: Image.network(
+          file.fileUrl,
+          fit: BoxFit.contain,
+          loadingBuilder: (_, child, progress) {
+            if (progress == null) return child;
+            return Center(child: CircularProgressIndicator(
+              value: progress.expectedTotalBytes != null
+                  ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
+                  : null,
+            ));
+          },
+        ),
+      ),
+    );
+  }
+}
+```
+
+---
+
+### 8.4 下载视频到本地
+
+**优先级：P1**
+
+```
+GET /api/v1/media/file?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+```
+
+返回视频二进制数据（`video/mp4`），支持 Range 断点续传。
+
+#### 用 Dio 下载（支持进度显示）
+
+```dart
+import 'package:dio/dio.dart';
+import 'package:path_provider/path_provider.dart';
+
+class FileDownloader {
+  final Dio _dio = Dio();
+
+  /// 下载文件到本地
+  Future<String> download(
+    MediaFile file, {
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final savePath = '${dir.path}/${file.name}';
+
+    await _dio.download(
+      file.fileUrl,
+      savePath,
+      onReceiveProgress: onProgress,
+    );
+
+    return savePath;
+  }
+}
+
+// 使用示例
+final downloader = FileDownloader();
+
+await downloader.download(
+  videoFile,
+  onProgress: (received, total) {
+    final percent = (received / total * 100).toStringAsFixed(0);
+    print('下载进度: $percent%');
+  },
+);
+```
+
+#### 下载后播放视频
+
+```dart
+import 'package:open_file/open_file.dart';
+
+// 下载完成后用系统播放器打开
+final localPath = await downloader.download(videoFile);
+OpenFile.open(localPath);
+```
+
+---
+
+### 8.5 删除文件
+
+**优先级：P1**
+
+```
+DELETE /api/v1/media/file?path=/mnt/DCIM/Normal/VID_20260522_143000.MP4
+```
+
+#### 调用示例
+
+```dart
+Future<bool> deleteFile(MediaFile file) async {
+  final resp = await http.delete(
+    '/api/v1/media/file',
+    params: {'path': file.path},
+  );
+  if (resp.isSuccess) {
+    setState(() => _files.remove(file));
+    return true;
+  }
+  showError('删除失败: ${resp.msg}');
+  return false;
+}
+```
+
+---
+
+### 8.6 相册页完整示例
+
+```dart
+class AlbumPage extends StatefulWidget {
+  @override
+  State<AlbumPage> createState() => _AlbumPageState();
+}
+
+class _AlbumPageState extends State<AlbumPage> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final _types = ['video_normal', 'video_event', 'video_parking', 'photo'];
+  final _titles = ['普通视频', '事件视频', '停车视频', '照片'];
+  Map<String, MediaFileList?> _fileLists = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _loadFiles('video_normal');
+  }
+
+  Future<void> _loadFiles(String type) async {
+    final resp = await http.get<MediaFileList>(
+      '/api/v1/media/files',
+      params: {'type': type, 'page': '1', 'pageSize': '20'},
+      fromData: (d) => MediaFileList.fromJson(d),
+    );
+    if (resp.isSuccess) {
+      setState(() => _fileLists[type] = resp.data);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('相册'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: _titles.map((t) => Tab(text: t)).toList(),
+          onTap: (i) => _loadFiles(_types[i]),
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: _types.map((type) {
+          final list = _fileLists[type];
+          if (list == null) return Center(child: CircularProgressIndicator());
+          if (list.files.isEmpty) return Center(child: Text('暂无文件'));
+
+          return GridView.builder(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 4 / 3,
+            ),
+            itemCount: list.files.length,
+            itemBuilder: (_, i) {
+              final file = list.files[i];
+              return GestureDetector(
+                onTap: () => _openFile(file),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // 缩略图
+                    Image.network(file.thumbnailUrl, fit: BoxFit.cover),
+                    // 视频时长标签
+                    if (file.isVideo)
+                      Positioned(
+                        bottom: 4, right: 4,
+                        child: Container(
+                          padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          color: Colors.black54,
+                          child: Text(file.durationDisplay,
+                            style: TextStyle(color: Colors.white, fontSize: 12)),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  void _openFile(MediaFile file) {
+    if (file.isPhoto) {
+      // 打开图片查看页
+      Navigator.push(context,
+        MaterialPageRoute(builder: (_) => PhotoViewPage(file: file)));
+    } else {
+      // 下载视频后播放
+      _downloadAndPlay(file);
+    }
+  }
+}
+```
+
+---
+
+## 9. REST API — 设置
+
+---
+
+### 9.1 获取菜单
+
+**优先级：P1**
+
+```
+GET /api/v1/settings/menus?lang=zh-CN
+```
+
+**这个接口一次性返回所有菜单数据：菜单定义 + 翻译 + 当前值。你不需要多次请求再拼装。**
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "currentMode": "NormalRecordeMode",
+    "currentModeIndex": 0,
+    "modeMenus": [
+      {
+        "id": "rec_resolution",
+        "title": "分辨率",
+        "index": 0,
+        "currentValue": 2,
+        "options": [
+          { "index": 0, "id": "720p30", "title": "720P 30FPS" },
+          { "index": 1, "id": "1080p30", "title": "1080P 30FPS" },
+          { "index": 2, "id": "4k30", "title": "4K 30FPS" }
+        ]
+      },
+      {
+        "id": "loop_record",
+        "title": "循环录像",
+        "index": 1,
+        "currentValue": 0,
+        "options": [
+          { "index": 0, "id": "off", "title": "关闭" },
+          { "index": 1, "id": "1min", "title": "1分钟" },
+          { "index": 2, "id": "3min", "title": "3分钟" },
+          { "index": 3, "id": "5min", "title": "5分钟" }
+        ]
+      },
+      {
+        "id": "exposure",
+        "title": "曝光补偿",
+        "index": 2,
+        "currentValue": 2,
+        "options": [
+          { "index": 0, "id": "n2", "title": "-2.0" },
+          { "index": 1, "id": "n1", "title": "-1.0" },
+          { "index": 2, "id": "0", "title": "0" },
+          { "index": 3, "id": "p1", "title": "+1.0" },
+          { "index": 4, "id": "p2", "title": "+2.0" }
+        ]
+      }
+    ],
+    "systemMenus": [
+      {
+        "id": "wifi_ssid",
+        "title": "Wi-Fi 名称",
+        "index": 0,
+        "currentValue": -1,
+        "options": [],
+        "type": "input",
+        "value": "QZ-CAM-001"
+      },
+      {
+        "id": "wifi_password",
+        "title": "Wi-Fi 密码",
+        "index": 1,
+        "currentValue": -1,
+        "options": [],
+        "type": "input",
+        "value": "12345678"
+      },
+      {
+        "id": "date_time",
+        "title": "日期时间",
+        "index": 2,
+        "currentValue": -1,
+        "options": [],
+        "type": "datetime",
+        "value": "2026-05-22 14:30:00"
+      },
+      {
+        "id": "language",
+        "title": "语言",
+        "index": 3,
+        "currentValue": 0,
+        "options": [
+          { "index": 0, "id": "zh-CN", "title": "简体中文" },
+          { "index": 1, "id": "en", "title": "English" }
+        ]
+      },
+      {
+        "id": "format_card",
+        "title": "格式化存储卡",
+        "index": 4,
+        "currentValue": -1,
+        "options": [],
+        "type": "action"
+      },
+      {
+        "id": "factory_reset",
+        "title": "恢复出厂设置",
+        "index": 5,
+        "currentValue": -1,
+        "options": [],
+        "type": "action"
+      }
+    ]
+  }
+}
+```
+
+#### 数据模型
+
+```dart
+class MenuOption {
+  final int index;
+  final String id;
+  final String title;
+
+  MenuOption.fromJson(Map<String, dynamic> json)
+      : index = json['index'],
+        id = json['id'],
+        title = json['title'];
+}
+
+class MenuItem {
+  final String id;
+  final String title;
+  final int index;
+  int currentValue;
+  final List<MenuOption> options;
+  final String? type;    // "input", "datetime", "action", 或 null（选项类型）
+  final String? value;   // input/datetime 的当前文本值
+
+  MenuItem.fromJson(Map<String, dynamic> json)
+      : id = json['id'],
+        title = json['title'],
+        index = json['index'],
+        currentValue = json['currentValue'],
+        options = (json['options'] as List).map((o) => MenuOption.fromJson(o)).toList(),
+        type = json['type'],
+        value = json['value'];
+
+  /// 是否是选项类型（有下拉选择）
+  bool get isOptionType => options.isNotEmpty;
+
+  /// 当前选中的选项标题
+  String? get currentOptionTitle {
+    if (currentValue < 0 || currentValue >= options.length) return null;
+    return options[currentValue].title;
+  }
+}
+
+class MenuData {
+  final String currentMode;
+  final int currentModeIndex;
+  final List<MenuItem> modeMenus;
+  final List<MenuItem> systemMenus;
+
+  MenuData.fromJson(Map<String, dynamic> json)
+      : currentMode = json['currentMode'],
+        currentModeIndex = json['currentModeIndex'],
+        modeMenus = (json['modeMenus'] as List).map((m) => MenuItem.fromJson(m)).toList(),
+        systemMenus = (json['systemMenus'] as List).map((m) => MenuItem.fromJson(m)).toList();
+}
+```
+
+#### 调用示例
+
+```dart
+Future<MenuData> loadMenus() async {
+  final resp = await http.get<MenuData>(
+    '/api/v1/settings/menus',
+    params: {'lang': 'zh-CN'},
+    fromData: (d) => MenuData.fromJson(d),
+  );
+  return resp.data!;
+}
+```
+
+---
+
+### 9.2 修改菜单选项
+
+**优先级：P1**
+
+```
+POST /api/v1/settings/menu/value
+Content-Type: application/json
+
+{"id": "rec_resolution", "value": 1}
+```
+
+#### 调用示例
+
+```dart
+Future<void> changeMenuValue(MenuItem menu, int newValue) async {
+  final resp = await http.post(
+    '/api/v1/settings/menu/value',
+    body: {'id': menu.id, 'value': newValue},
+  );
+  if (resp.isSuccess) {
+    setState(() => menu.currentValue = newValue);
+  }
+}
+```
+
+---
+
+### 9.3 设置 Wi-Fi
+
+**优先级：P1**
+
+```
+POST /api/v1/settings/wifi
+Content-Type: application/json
+
+{"ssid": "MyCamera", "password": "88888888"}
+```
+
+#### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "ssid": "MyCamera",
+    "password": "88888888",
+    "reconnectRequired": true
+  }
+}
+```
+
+#### 调用示例
+
+```dart
+Future<void> setWifi(String ssid, String password) async {
+  final resp = await http.post(
+    '/api/v1/settings/wifi',
+    body: {'ssid': ssid, 'password': password},
+  );
+  if (resp.isSuccess && resp.data['reconnectRequired'] == true) {
+    showDialog('Wi-Fi 已修改，请重新连接设备热点');
+  }
+}
+```
+
+---
+
+### 9.4 同步时间
+
+**优先级：P1**
+
+```
+POST /api/v1/settings/datetime
+Content-Type: application/json
+
+{"datetime": "2026-05-22 14:30:00"}
+```
+
+#### 调用示例
+
+```dart
+Future<void> syncTime() async {
+  final now = DateTime.now();
+  final formatted = '${now.year}-${_pad(now.month)}-${_pad(now.day)} '
+      '${_pad(now.hour)}:${_pad(now.minute)}:${_pad(now.second)}';
+
+  await http.post(
+    '/api/v1/settings/datetime',
+    body: {'datetime': formatted},
+  );
+}
+
+String _pad(int n) => n.toString().padLeft(2, '0');
+```
+
+---
+
+### 9.5 格式化 SD 卡
+
+**优先级：P2**
+
+```
+POST /api/v1/settings/format
+```
+
+#### 调用示例
+
+```dart
+Future<void> formatCard() async {
+  final confirm = await showConfirmDialog('确定要格式化 SD 卡？所有文件将被删除。');
+  if (!confirm) return;
+
+  final resp = await http.post('/api/v1/settings/format');
+  if (resp.isSuccess) {
+    showSnackBar('格式化完成');
+  }
+}
+```
+
+---
+
+### 9.6 恢复出厂设置
+
+**优先级：P2**
+
+```
+POST /api/v1/settings/reset
+```
+
+#### 调用示例
+
+```dart
+Future<void> factoryReset() async {
+  final confirm = await showConfirmDialog('确定要恢复出厂设置？');
+  if (!confirm) return;
+
+  final resp = await http.post('/api/v1/settings/reset');
+  if (resp.isSuccess) {
+    showDialog('已恢复出厂设置，请重新连接设备');
+  }
+}
+```
+
+---
+
+### 9.7 设置页完整示例
+
+```dart
+class SettingPage extends StatefulWidget {
+  @override
+  State<SettingPage> createState() => _SettingPageState();
+}
+
+class _SettingPageState extends State<SettingPage> {
+  MenuData? _menuData;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMenus();
+  }
+
+  Future<void> _loadMenus() async {
+    final data = await loadMenus();
+    setState(() => _menuData = data);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_menuData == null) return Center(child: CircularProgressIndicator());
+
+    return ListView(
+      children: [
+        // 当前模式菜单
+        _buildSection('当前模式设置', _menuData!.modeMenus),
+        // 系统菜单
+        _buildSection('系统设置', _menuData!.systemMenus),
+      ],
+    );
+  }
+
+  Widget _buildSection(String title, List<MenuItem> menus) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        ),
+        ...menus.map((menu) => _buildMenuItem(menu)),
+      ],
+    );
+  }
+
+  Widget _buildMenuItem(MenuItem menu) {
+    // 选项类型 → 弹出选择器
+    if (menu.isOptionType) {
+      return ListTile(
+        title: Text(menu.title),
+        subtitle: Text(menu.currentOptionTitle ?? ''),
+        onTap: () => _showOptionPicker(menu),
+      );
+    }
+    // 输入类型
+    if (menu.type == 'input') {
+      return ListTile(
+        title: Text(menu.title),
+        subtitle: Text(menu.value ?? ''),
+        onTap: () => _showInputDialog(menu),
+      );
+    }
+    // 时间类型
+    if (menu.type == 'datetime') {
+      return ListTile(
+        title: Text(menu.title),
+        subtitle: Text(menu.value ?? ''),
+        onTap: () => syncTime(),
+      );
+    }
+    // 动作类型
+    if (menu.type == 'action') {
+      return ListTile(
+        title: Text(menu.title),
+        onTap: () => _executeAction(menu),
+      );
+    }
+    return SizedBox.shrink();
+  }
+
+  void _showOptionPicker(MenuItem menu) {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => ListView(
+        shrinkWrap: true,
+        children: menu.options.map((opt) => ListTile(
+          title: Text(opt.title),
+          trailing: opt.index == menu.currentValue ? Icon(Icons.check) : null,
+          onTap: () {
+            changeMenuValue(menu, opt.index);
+            Navigator.pop(context);
+          },
+        )).toList(),
+      ),
+    );
+  }
+}
+```
+
+---
+
+## 10. 工作模式定义
+
+### 10.1 模式枚举
+
+| 编号 | 模式名 | 中文 | 类型 |
+|---|---|---|---|
+| 0 | `NormalRecordeMode` | 普通录像 | 录像 |
+| 1 | `SlowRecordeMode` | 慢动作 | 录像 |
+| 2 | `LoopRecordeMode` | 循环录像 | 录像 |
+| 3 | `TimeLapseMode` | 延时摄影 | 录像 |
+| 4 | `NormalCaptureMode` | 普通拍照 | 拍照 |
+| 5 | `AutoCaptureMode` | 自动拍照 | 拍照 |
+| 6 | `ContinueCaptureMode` | 连拍 | 拍照 |
+| 7 | `TimingCaptureMode` | 定时拍照 | 拍照 |
+
+### 10.2 Dart 枚举
+
+```dart
+enum WorkMode {
+  normalRecord(0, 'NormalRecordeMode', '普通录像'),
+  slowRecord(1, 'SlowRecordeMode', '慢动作'),
+  loopRecord(2, 'LoopRecordeMode', '循环录像'),
+  timeLapse(3, 'TimeLapseMode', '延时摄影'),
+  normalCapture(4, 'NormalCaptureMode', '普通拍照'),
+  autoCapture(5, 'AutoCaptureMode', '自动拍照'),
+  continueCapture(6, 'ContinueCaptureMode', '连拍'),
+  timingCapture(7, 'TimingCaptureMode', '定时拍照');
+
+  final int index;
+  final String rawName;
+  final String displayName;
+
+  const WorkMode(this.index, this.rawName, this.displayName);
+
+  bool get isRecordMode => index <= 3;
+  bool get isCaptureMode => index >= 4;
+
+  static WorkMode fromIndex(int i) =>
+      WorkMode.values.firstWhere((m) => m.index == i, orElse: () => normalRecord);
+
+  static WorkMode fromName(String name) =>
+      WorkMode.values.firstWhere((m) => m.rawName == name, orElse: () => normalRecord);
+}
+```
+
+### 10.3 模式切换后的处理
+
+切换模式后，菜单内容会变化。你需要重新请求菜单：
+
+```dart
+Future<void> onModeChanged(int newModeIndex) async {
+  // 1. 切换模式
+  await http.post('/api/v1/camera/mode', body: {'mode': newModeIndex});
+
+  // 2. 重新加载菜单（设备返回的 modeMenus 会自动变化）
+  final menus = await loadMenus();
+  setState(() => _menuData = menus);
+}
+```
+
+---
+
+## 11. 连接初始化完整流程
+
+App 连接设备的完整代码流程：
+
+```dart
+class QZCameraClient {
+  final QZHttpClient http = QZHttpClient();
+  final QZEventSocket eventSocket = QZEventSocket();
+
+  DeviceInfo? deviceInfo;
+  StorageInfo? storageInfo;
+  CameraStatus? cameraStatus;
+
+  /// 完整连接流程
+  Future<bool> connect() async {
+    // [1] 检测设备
+    if (!await DeviceDetector.isQZDeviceConnected()) {
+      return false;
+    }
+
+    // [2] TCP 心跳（最先建立）
+    final socketOk = await eventSocket.connect();
+    if (!socketOk) return false;
+
+    // [3] 并行读取基础状态
+    final results = await Future.wait([
+      http.get('/api/v1/device/info', fromData: (d) => DeviceInfo.fromJson(d)),
+      http.get('/api/v1/device/storage', fromData: (d) => StorageInfo.fromJson(d)),
+      http.get('/api/v1/camera/status', fromData: (d) => CameraStatus.fromJson(d)),
+    ]);
+
+    deviceInfo = (results[0] as ApiResponse<DeviceInfo>).data;
+    storageInfo = (results[1] as ApiResponse<StorageInfo>).data;
+    cameraStatus = (results[2] as ApiResponse<CameraStatus>).data;
+
+    // [4] 连接 RTSP（在 PreviewPage 中启动）
+
+    // [5] 异步加载菜单和文件列表（不阻塞连接）
+    _loadMenusAsync();
+    _loadFilesAsync();
+
+    return true;
+  }
+
+  /// 断开连接
+  Future<void> disconnect() async {
+    await eventSocket.disconnect();
+  }
+
+  void dispose() {
+    eventSocket.dispose();
+    http.dispose();
+  }
+}
+```
+
+### 时序图
+
+```
+App                          设备
+ │                            │
+ ├─── TCP connect :9999 ─────►│  [1] 心跳通道
+ │◄── OK ────────────────────┤
+ ├─── S:100.0 (每500ms) ────►│
+ │                            │
+ ├─── GET /device/info ──────►│  [2] 基础信息（并行）
+ ├─── GET /device/storage ───►│
+ ├─── GET /camera/status ────►│
+ │◄── JSON responses ────────┤
+ │                            │
+ ├─── RTSP connect :8554 ───►│  [3] 预览流
+ │◄── video stream ──────────┤
+ │                            │
+ ├─── GET /settings/menus ───►│  [4] 菜单（异步）
+ ├─── GET /media/files ──────►│  [5] 文件列表（异步）
+ │◄── JSON responses ────────┤
+ │                            │
+ │  ✅ 连接完成，进入主界面     │
+```
+
+---
+
+## 12. 页面与 API 对应关系
+
+| 页面 | 需要调用的 API |
+|---|---|
+| **连接页** | `DeviceDetector` 检测网关 IP → TCP 心跳连接 |
+| **预览页** | RTSP 播放 + `GET /camera/status` + `POST /camera/record/*` + `POST /camera/capture` |
+| **相册页** | `GET /media/files` + `GET /media/thumbnail` + `GET /media/file` + `DELETE /media/file` |
+| **设置页** | `GET /settings/menus` + `POST /settings/menu/value` + `POST /settings/wifi` + `POST /settings/datetime` |
+| **设备信息页** | `GET /device/info` + `GET /device/storage` + `GET /device/battery` |
+
+---
+
+## 13. 完整 Mock 数据集
+
+在设备端未完成前，你可以用以下 Mock 数据自测 App。
+
+### 13.1 用 json-server 搭建 Mock
+
+安装：
+```bash
+npm install -g json-server
+```
+
+创建 `mock-db.json`：
+
+```json
+{
+  "device_info": {
+    "code": 0,
+    "msg": "ok",
+    "data": {
+      "deviceId": 1,
+      "deviceName": "QZ-CAM-001",
+      "model": "QZ-4K",
+      "firmware": "V1.0.0",
+      "serialNumber": "SN20260001"
+    }
+  },
+  "device_storage": {
+    "code": 0,
+    "msg": "ok",
+    "data": {
+      "inserted": true,
+      "totalMB": 127512,
+      "freeMB": 92341,
+      "usedMB": 35171
+    }
+  },
+  "device_battery": {
+    "code": 0,
+    "msg": "ok",
+    "data": {
+      "level": 85,
+      "charging": false,
+      "full": false
+    }
+  },
+  "camera_status": {
+    "code": 0,
+    "msg": "ok",
+    "data": {
+      "recording": false,
+      "mode": "NormalRecordeMode",
+      "modeIndex": 0,
+      "rtspUrl": "rtsp://192.168.10.1:8554/ch00"
+    }
+  }
+}
+```
+
+### 13.2 文件列表 Mock（普通视频）
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "total": 3,
+    "page": 1,
+    "pageSize": 20,
+    "files": [
+      {
+        "path": "/mnt/DCIM/Normal/VID_20260522_143000.MP4",
+        "name": "VID_20260522_143000.MP4",
+        "size": 52428800,
+        "time": "2026-05-22 14:30:00",
+        "duration": 120,
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "path": "/mnt/DCIM/Normal/VID_20260522_141500.MP4",
+        "name": "VID_20260522_141500.MP4",
+        "size": 26214400,
+        "time": "2026-05-22 14:15:00",
+        "duration": 60,
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "path": "/mnt/DCIM/Normal/VID_20260521_100000.MP4",
+        "name": "VID_20260521_100000.MP4",
+        "size": 104857600,
+        "time": "2026-05-21 10:00:00",
+        "duration": 300,
+        "width": 3840,
+        "height": 2160
+      }
+    ]
+  }
+}
+```
+
+### 13.3 文件列表 Mock（照片）
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "total": 2,
+    "page": 1,
+    "pageSize": 20,
+    "files": [
+      {
+        "path": "/mnt/DCIM/Photo/IMG_20260522_143500.jpg",
+        "name": "IMG_20260522_143500.jpg",
+        "size": 3145728,
+        "time": "2026-05-22 14:35:00",
+        "duration": 0,
+        "width": 4032,
+        "height": 3024
+      },
+      {
+        "path": "/mnt/DCIM/Photo/IMG_20260522_142000.jpg",
+        "name": "IMG_20260522_142000.jpg",
+        "size": 2621440,
+        "time": "2026-05-22 14:20:00",
+        "duration": 0,
+        "width": 4032,
+        "height": 3024
+      }
+    ]
+  }
+}
+```
+
+### 13.4 菜单 Mock
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "currentMode": "NormalRecordeMode",
+    "currentModeIndex": 0,
+    "modeMenus": [
+      {
+        "id": "rec_resolution",
+        "title": "分辨率",
+        "index": 0,
+        "currentValue": 2,
+        "options": [
+          { "index": 0, "id": "720p30", "title": "720P 30FPS" },
+          { "index": 1, "id": "1080p30", "title": "1080P 30FPS" },
+          { "index": 2, "id": "4k30", "title": "4K 30FPS" }
+        ]
+      },
+      {
+        "id": "loop_record",
+        "title": "循环录像",
+        "index": 1,
+        "currentValue": 0,
+        "options": [
+          { "index": 0, "id": "off", "title": "关闭" },
+          { "index": 1, "id": "1min", "title": "1分钟" },
+          { "index": 2, "id": "3min", "title": "3分钟" },
+          { "index": 3, "id": "5min", "title": "5分钟" }
+        ]
+      },
+      {
+        "id": "exposure",
+        "title": "曝光补偿",
+        "index": 2,
+        "currentValue": 2,
+        "options": [
+          { "index": 0, "id": "n2", "title": "-2.0" },
+          { "index": 1, "id": "n1", "title": "-1.0" },
+          { "index": 2, "id": "0", "title": "0" },
+          { "index": 3, "id": "p1", "title": "+1.0" },
+          { "index": 4, "id": "p2", "title": "+2.0" }
+        ]
+      }
+    ],
+    "systemMenus": [
+      {
+        "id": "wifi_ssid",
+        "title": "Wi-Fi 名称",
+        "index": 0,
+        "currentValue": -1,
+        "options": [],
+        "type": "input",
+        "value": "QZ-CAM-001"
+      },
+      {
+        "id": "wifi_password",
+        "title": "Wi-Fi 密码",
+        "index": 1,
+        "currentValue": -1,
+        "options": [],
+        "type": "input",
+        "value": "12345678"
+      },
+      {
+        "id": "date_time",
+        "title": "日期时间",
+        "index": 2,
+        "currentValue": -1,
+        "options": [],
+        "type": "datetime",
+        "value": "2026-05-22 14:30:00"
+      },
+      {
+        "id": "language",
+        "title": "语言",
+        "index": 3,
+        "currentValue": 0,
+        "options": [
+          { "index": 0, "id": "zh-CN", "title": "简体中文" },
+          { "index": 1, "id": "en", "title": "English" }
+        ]
+      },
+      {
+        "id": "format_card",
+        "title": "格式化存储卡",
+        "index": 4,
+        "currentValue": -1,
+        "options": [],
+        "type": "action"
+      },
+      {
+        "id": "factory_reset",
+        "title": "恢复出厂设置",
+        "index": 5,
+        "currentValue": -1,
+        "options": [],
+        "type": "action"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 14. 错误码与处理
+
+### 14.1 错误码表
+
+| code | 含义 | 你的处理 |
+|---|---|---|
+| `0` | 成功 | 正常处理 |
+| `-1` | 通用失败 | 显示 `msg` 内容 |
+| `-2` | 参数错误 | 检查请求参数 |
+| `-3` | SD 卡未插入 | 提示用户插入 SD 卡 |
+| `-4` | SD 卡已满 | 提示空间不足 |
+| `-5` | 文件不存在 | 刷新文件列表 |
+| `-6` | 设备忙 | 稍后重试 |
+| `-7` | 模式不支持 | 检查模式编号 |
+
+### 14.2 统一错误处理
+
+```dart
+void handleApiError(ApiResponse resp) {
+  switch (resp.code) {
+    case -3:
+      showDialog('请插入 SD 卡后再试');
+      break;
+    case -4:
+      showDialog('存储空间不足，请清理文件');
+      break;
+    case -5:
+      showSnackBar('文件已不存在');
+      refreshFileList();
+      break;
+    case -6:
+      showSnackBar('设备忙，请稍后重试');
+      break;
+    default:
+      showSnackBar('操作失败: ${resp.msg}');
+  }
+}
+```
+
+### 14.3 网络超时处理
+
+```dart
+try {
+  final resp = await http.get('/api/v1/camera/status');
+  // ...
+} on TimeoutException {
+  showDialog('连接超时，请检查 Wi-Fi 是否已连接到相机');
+} on SocketException {
+  showDialog('无法连接设备，请确认已连接相机热点');
+}
+```
+
+### 14.4 推荐 Flutter 依赖
+
+```yaml
+dependencies:
+  http: ^1.2.0                    # HTTP 请求
+  dio: ^5.4.0                     # 文件下载（支持进度）
+  network_info_plus: ^5.0.0       # Wi-Fi 网关检测
+  fijkplayer: ^0.11.0             # RTSP 播放（二选一）
+  # media_kit: ^1.1.0             # RTSP 播放（二选一）
+  cached_network_image: ^3.3.0    # 缩略图缓存
+  provider: ^6.1.0                # 状态管理
+  path_provider: ^2.1.0           # 本地存储路径
+  permission_handler: ^11.3.0     # 权限管理
+```

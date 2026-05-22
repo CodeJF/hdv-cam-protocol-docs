@@ -26,18 +26,25 @@
 | [mstar-protocol.md](./mstar-protocol.md) | MStar 协议 — CGI 接口、属性树 |
 | [yz-protocol.md](./yz-protocol.md) | YZ 协议 — REST 接口、JSON 响应、curl 示例 |
 
-### 接口协议（开工用）
+### REST API 接口协议（开工用，拿到就干活）
+
+| 文档 | 给谁看 |
+|---|---|
+| [qz-api-embedded.md](./qz-api-embedded.md) | **嵌入式工程师** — 你是 Server 端，按文档实现所有接口，附 curl 自测 |
+| [qz-api-app.md](./qz-api-app.md) | **App 工程师** — 你是 Client 端，按文档调用接口，附 Dart 代码和 Mock 数据 |
+
+### 逆向分析参考（原协议）
 
 | 文档 | 说明 |
 |---|---|
-| [qz-interface-specification.md](./qz-interface-specification.md) | **统一接口协议规范** — 嵌入式与 App 双方的唯一合同，可直接照着开工 |
+| [qz-interface-specification.md](./qz-interface-specification.md) | 原始 QZ 协议接口规范（命令码风格，供参考） |
 
 ### 开发指南
 
 | 文档 | 适合读者 |
 |---|---|
-| [qz-embedded-engineer-guide.md](./qz-embedded-engineer-guide.md) | 嵌入式/固件工程师 — 如何实现设备端 |
-| [qz-flutter-app-guide.md](./qz-flutter-app-guide.md) | Flutter App 工程师 — 如何实现客户端 |
+| [qz-embedded-engineer-guide.md](./qz-embedded-engineer-guide.md) | 嵌入式/固件工程师 — 原协议实现参考 |
+| [qz-flutter-app-guide.md](./qz-flutter-app-guide.md) | Flutter App 工程师 — 原协议接入参考 |
 
 ## 三套协议族
 
@@ -52,8 +59,7 @@ HDV CAM App 内置 3 套设备协议，根据手机连接的热点网关 IP 自�
 ## 怎么看
 
 - **刚接触项目？** 从 [主文档](./app-newCam-release-technical-analysis.md) 开始，了解全貌
-- **要开工干活？** 看 [统一接口协议规范](./qz-interface-specification.md)，嵌入式和 App 各自照着做
-- **做 QZ 固件？** 看 [嵌入式指南](./qz-embedded-engineer-guide.md) + [接口规范](./qz-interface-specification.md)
-- **做 Flutter App？** 看 [Flutter 指南](./qz-flutter-app-guide.md) + [接口规范](./qz-interface-specification.md)
+- **嵌入式要开工？** 看 [qz-api-embedded.md](./qz-api-embedded.md)，你是 Server 端
+- **App 要开工？** 看 [qz-api-app.md](./qz-api-app.md)，你是 Client 端
 - **排期派活？** 看 [复刻计划](./qz-replica-plan.md)
 - **想快速抓包验证？** 先从 [YZ 协议](./yz-protocol.md) 开始，接口最直白

@@ -789,6 +789,16 @@ GET /api/v1/device/info
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `deviceId` | number | 设备 ID，每台设备唯一 |
+| `deviceName` | string | 设备名称，用户可通过设置修改，也是 Wi-Fi 热点名 |
+| `model` | string | 设备型号，出厂固定（如 `QZ-4K`） |
+| `firmware` | string | 固件版本号（如 `V1.0.0`） |
+| `serialNumber` | string | 设备序列号，出厂固定 |
+
 #### 数据模型
 
 ```dart
@@ -845,6 +855,15 @@ GET /api/v1/device/storage
   }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `inserted` | boolean | SD 卡是否已插入，`false` 时其他字段都为 0 |
+| `totalMB` | number | SD 卡总容量（MB），如 127512 表示约 128 GB |
+| `freeMB` | number | SD 卡剩余可用空间（MB） |
+| `usedMB` | number | SD 卡已用空间（MB） |
 
 #### 数据模型
 
@@ -911,6 +930,14 @@ GET /api/v1/device/battery
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `level` | number | 电量百分比，0-100，如 85 表示 85% |
+| `charging` | boolean | 是否正在充电（USB 供电中） |
+| `full` | boolean | 电池是否已充满（charging=true 且 level=100 时为 true） |
+
 #### 数据模型
 
 ```dart
@@ -963,6 +990,13 @@ GET /api/v1/device/check
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `online` | boolean | 设备是否正常工作，用于判断设备是否死机或异常 |
+| `uptime` | number | 设备已运行时长（秒），如 3600 表示开机 1 小时 |
+
 #### 调用示例
 
 ```dart
@@ -1000,6 +1034,15 @@ GET /api/v1/camera/status
   }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `recording` | boolean | 是否正在录像，`true` 表示录像中 |
+| `mode` | string | 当前工作模式名称，如 `NormalRecordeMode`，见 [第 10 章](#10-工作模式定义) |
+| `modeIndex` | number | 当前工作模式编号 0-7，0-3 为录像模式，4-7 为拍照模式 |
+| `rtspUrl` | string | RTSP 实时预览地址，如 `rtsp://192.168.10.1:8554/ch00` |
 
 #### 数据模型
 
@@ -2165,6 +2208,27 @@ GET /api/v1/settings/menus?lang=zh-CN
 }
 ```
 
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `currentMode` | string | 当前工作模式名称，如 `NormalRecordeMode` |
+| `currentModeIndex` | number | 当前工作模式编号 0-7 |
+| `modeMenus` | array | 当前模式下的设置菜单（如分辨率、循环录像），切换模式后菜单项会变 |
+| `systemMenus` | array | 系统菜单（Wi-Fi、时间、语言、格式化等），所有模式通用 |
+
+**菜单项字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 菜单唯一标识，如 `rec_resolution`、`wifi_ssid` |
+| `title` | string | 菜单显示名称，已按 `lang` 参数翻译 |
+| `index` | number | 菜单排序序号 |
+| `currentValue` | number | 当前选中的选项 index，`-1` 表示非选项类型（如输入框、按钮） |
+| `options` | array | 可选项列表，每项有 `index`、`id`、`title`。选项类型菜单才有值，其他为空数组 |
+| `type` | string? | 可选，特殊类型：`input`=输入框（Wi-Fi名/密码），`datetime`=时间选择，`action`=按钮（格式化/重置）。省略表示普通选项类型 |
+| `value` | string? | 可选，`input`/`datetime` 类型的当前文本值 |
+
 #### 数据模型
 
 ```dart
@@ -2247,6 +2311,15 @@ Content-Type: application/json
 {"id": "rec_resolution", "value": 1}
 ```
 
+#### 请求体字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` | string | 是 | 菜单项唯一标识，从菜单列表的 `id` 字段获取 |
+| `value` | number | 是 | 新的选项 index，对应菜单项 `options` 数组中的 `index` 值 |
+
+返回 `data: null`，成功与否看 `code`。
+
 #### 调用示例
 
 ```dart
@@ -2267,12 +2340,21 @@ Future<void> changeMenuValue(MenuItem menu, int newValue) async {
 
 **优先级：P1**
 
+**什么时候调用：** 用户在设置页修改相机 Wi-Fi 热点名称或密码。修改后手机需要重新连接新热点。
+
 ```
 POST /api/v1/settings/wifi
 Content-Type: application/json
 
 {"ssid": "MyCamera", "password": "88888888"}
 ```
+
+#### 请求体字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `ssid` | string | 否 | 新的 Wi-Fi 热点名称，不传则不修改 |
+| `password` | string | 否 | 新的 Wi-Fi 密码，不传则不修改 |
 
 #### 响应示例
 
@@ -2287,6 +2369,14 @@ Content-Type: application/json
   }
 }
 ```
+
+#### 返回字段（data）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `ssid` | string | 修改后的 Wi-Fi 热点名称 |
+| `password` | string | 修改后的 Wi-Fi 密码 |
+| `reconnectRequired` | boolean | 是否需要手机重新连接 Wi-Fi，修改了名称或密码时为 `true` |
 
 #### 调用示例
 
@@ -2308,12 +2398,22 @@ Future<void> setWifi(String ssid, String password) async {
 
 **优先级：P1**
 
+**什么时候调用：** App 连接设备后自动调用一次，把手机当前时间同步给相机，确保录像/拍照的时间戳准确。
+
 ```
 POST /api/v1/settings/datetime
 Content-Type: application/json
 
 {"datetime": "2026-05-22 14:30:00"}
 ```
+
+#### 请求体字段
+
+| 字段 | 类型 | 必填 | 格式 | 说明 |
+|---|---|---|---|---|
+| `datetime` | string | 是 | `yyyy-MM-dd HH:mm:ss` | 手机当前时间，如 `2026-05-22 14:30:00` |
+
+返回 `data: null`，成功与否看 `code`。
 
 #### 调用示例
 

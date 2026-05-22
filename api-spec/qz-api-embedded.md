@@ -1751,11 +1751,15 @@ Content-Type: application/json
 }
 ```
 
+#### 返回字段（data）
+
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `reconnectRequired` | boolean | 是否需要重新连接 Wi-Fi |
+| `ssid` | string | 修改后的 Wi-Fi 热点名称 |
+| `password` | string | 修改后的 Wi-Fi 密码 |
+| `reconnectRequired` | boolean | 是否需要 App 重新连接 Wi-Fi（修改了 ssid 或 password 时为 `true`） |
 
-**你要做的事：** 修改 AP 热点名称/密码。修改后客户端需要重新连接。
+**你要做的事：** 修改 AP 热点名称/密码。修改后客户端需要断开并重新连接新热点。
 
 **curl 自测：**
 

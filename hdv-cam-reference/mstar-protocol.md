@@ -35,7 +35,7 @@
 - 典型 CGI 参数风格，不是 REST JSON
 - 属性树结构（`Camera.Menu.*`、`Net.WIFI_AP.*`）
 - 设备媒体索引靠下载 `DCF.db` 再本地解析
-- 存在 UDP 端口监听（状态通知/事件回调/心跳）
+- 存在 UDP 端口监听（`DatagramSocket(49142)`，设备发现广播接收，App 纯接收通道）
 
 ## 3. 请求模板
 
@@ -104,6 +104,6 @@ MStar 的媒体索引不靠列表接口，而是：
 
 ## 7. 额外说明
 
-- `CaseEventManager` 中存在 UDP 端口监听逻辑
-- HTTP 负责控制/查询，UDP 负责状态通知、事件回调或心跳
+- `CaseEventManager` 中存在 UDP 端口 49142 监听逻辑（与 QZ 的 `CaseEventManagerQZ` 共用端口）
+- HTTP 负责控制/查询，UDP 为设备发现广播接收通道（App 纯接收，不通过 UDP 发数据）
 - MStar 是三套协议里复杂度居中的一套

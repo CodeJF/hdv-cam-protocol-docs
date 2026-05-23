@@ -72,8 +72,10 @@
 ### 3.4 UDP（端口 49142）
 
 - `DatagramSocket` 监听端口 `49142`（0xBFF6）
-- 保活、ping、状态/事件通知
-- 直播相关辅助控制
+- **逆向确认**：App 端是**纯接收通道**（`DSocket.receive(packet)`），App 不通过此端口向设备发数据
+- 设备向 `192.168.10.255:49142` 广播，用于设备发现 + 多机状态同步
+- `sendData()` 走的是 TCP `outStream.write()`，不是 UDP
+- I 帧刷新不走此端口，由 Native 层（`libijkplayer.so` / FFmpeg）通过 RTCP PLI（RFC 4585）在 RTSP 协商端口自动处理
 
 ## 4. App 侧关键实现线索
 
@@ -93,7 +95,7 @@
 - `connect_getXML` - 菜单 XML 获取
 - `send_3008` / `getCurrSetting_2002` / `getCurrSetting_2002_2006` - 命令码操作
 - `changeLiveStreamWithParamStr` - 直播流控制
-- `handle_udp_rtsp` / `startUDP` - UDP 链路
+- `handle_udp_rtsp` / `startUDP` - UDP 链路（实际为设备发现广播接收，非 RTSP 控制）
 - `keepConnectActon` / `startTimer_keepConnect` - TCP 保活
 
 两端都是"协议层封装 + 页面层调用"，不是把业务写死在页面里。
@@ -159,7 +161,7 @@ QZ 定义了 8 种工作模式：
 ### P2 高兼容
 
 - `sunxi.db`
-- UDP 事件/保活
+- UDP 设备发现广播 + 多机状态同步
 - 完整枚举值对齐
 
 ## 8. 复刻优先顺序
@@ -173,7 +175,7 @@ QZ 定义了 8 种工作模式：
 7. `setting_keys.xml`
 8. `0x7d2` / `0x7d6`
 9. `sunxi.db`
-10. UDP 事件/保活高兼容
+10. UDP 设备发现广播 + 多机状态同步
 
 ## 9. 当前确定与不确定
 
@@ -189,7 +191,7 @@ QZ 定义了 8 种工作模式：
 
 ### 仍需联调/抓包确认
 
-- UDP 报文字段格式
+- UDP 广播报文字段格式
 - `sunxi.db` 完整表结构
 - 部分设置项的最终枚举语义
 - `connect_getXML` 的完整原始文件格式

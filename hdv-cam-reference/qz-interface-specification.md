@@ -127,7 +127,7 @@ QZ 协议包含 **4 条并行链路**，不是单一 HTTP：
 | TCP 心跳 | `9999` | 原始 TCP Socket | 连接保活、事件推送 | **P0** |
 | HTTP 控制 | `8082` | HTTP GET/POST | 命令控制、状态读取、资源文件 | **P0** |
 | RTSP 预览 | `8554` | RTSP over TCP | 实时视频流 | **P0** |
-| UDP 辅助 | `49142` | UDP Datagram | 状态广播、辅助控制 | P2 |
+| UDP 辅助 | `49142` | UDP Datagram | 设备发现广播 + 多机状态同步（App 纯接收） | P2 |
 
 **关键依赖**：TCP 心跳是连接成功的前提。如果设备不监听 9999 端口，App 会判定连接失败，后续 HTTP 和 RTSP 均不会正常工作。
 
@@ -293,7 +293,14 @@ rtsp://192.168.10.1:8554/ch00
 |---|---|
 | 端口 | `49142`（0xBFF6） |
 | 协议 | UDP Datagram |
-| 用途 | 状态广播、辅助保活、直播辅助控制 |
+| 方向 | 设备 → App（设备广播，App 纯接收） |
+| 用途 | 设备发现广播 + 多机状态同步 |
+
+**逆向确认**：
+- `CaseEventManagerQZ.java`：`new DatagramSocket(49142)` + `DSocket.receive(packet)`，App 仅接收
+- `sendData()` 走 TCP `outStream.write()`，不走 UDP
+- I 帧刷新由 Native 层（`libijkplayer.so`）通过 RTCP PLI（RFC 4585）自动处理，不走此端口
+- 整个 `com.record.*` 包中未找到 I-frame / IDR / keyframe 相关代码
 
 阶段 1 和阶段 2 可以不实现。App 主要依赖 HTTP + TCP 心跳工作。
 

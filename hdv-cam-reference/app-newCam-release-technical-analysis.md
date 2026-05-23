@@ -213,7 +213,7 @@ IJK Player 为主：`GeneralIJKLiveStreamPlayer` / `IjkPlayerView`。
 | RTSP | `rtsp://.../liveRTSP/av` | `rtsp://...:8554/ch00` | 动态获取 |
 | 菜单系统 | `Camera.Menu.*` 属性 | XML + 翻译资源 + 命令码 | `getparamvalue/items` |
 | 媒体索引 | 下载 `DCF.db` | `action=dir` 或 `sunxi.db` | `getfilelist` JSON |
-| 保活/事件 | UDP | TCP(9999) + UDP(49142) | 无明显证据 |
+| 保活/事件 | UDP | TCP(9999) 心跳 + UDP(49142) 设备发现广播（App 纯接收） | 无明显证据 |
 | 已确认命令数 | ~17 | **16** | ~30 |
 | 复杂度 | 中 | **高** | **低** |
 

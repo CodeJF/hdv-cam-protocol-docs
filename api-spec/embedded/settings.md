@@ -28,6 +28,25 @@ GET /api/v1/settings/menus?lang=zh-CN
 | 韩语 | `ko` |
 | 日语 | `ja` |
 
+#### 核心设计：不同模式返回不同菜单
+
+**设备有 8 种工作模式，每种模式的可配置项不同。** 设备端根据当前模式自动返回对应菜单，App 不需要做过滤。
+
+| 模式 | 模式名 | 典型菜单项示例 |
+|---|---|---|
+| 普通录像 | `NormalRecordeMode` | 录像分辨率、码率、循环录像、曝光 |
+| 慢动作录像 | `SlowRecordeMode` | 慢动作类型（帧率）、曝光 |
+| 循环录像 | `LoopRecordeMode` | 录像分辨率、循环时长、曝光 |
+| 延时录像 | `TimeLapseMode` | 延时分辨率、间隔时间、曝光 |
+| 普通拍照 | `NormalCaptureMode` | 照片分辨率、曝光、白平衡 |
+| 自动拍照 | `AutoCaptureMode` | 照片分辨率、自动间隔、曝光 |
+| 连拍 | `ContinueCaptureMode` | 照片分辨率、连拍张数、曝光 |
+| 定时拍照 | `TimingCaptureMode` | 照片分辨率、倒计时秒数、曝光 |
+
+系统菜单（Wi-Fi、时间、语言、格式化等）**所有模式通用**，始终返回在 `systemMenus` 中。
+
+> **逆向依据**：HDV CAM 原方案中，`setting_keys.xml` 包含 `record_normal_setting_keys`、`photo_normal_setting_keys` 等 8 个模式菜单节点 + 1 个 `system_setting_keys` 节点。App 端需要 3 次请求（XML + 翻译 + 当前值）再拼装。新设计由设备端一次性返回。
+
 #### 你要返回
 
 **重要：把菜单定义、翻译、当前值一次性返回，App 不需要多次请求。**

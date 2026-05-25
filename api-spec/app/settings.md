@@ -14,6 +14,27 @@ GET /api/v1/settings/menus?lang=zh-CN
 
 **这个接口一次性返回所有菜单数据：菜单定义 + 翻译 + 当前值。你不需要多次请求再拼装。**
 
+#### 核心概念：不同模式的菜单不同
+
+设备有 8 种工作模式，**每种模式的可配置项不同**。接口会根据设备当前模式自动返回对应菜单：
+
+| 模式 | 模式名 | `modeMenus` 返回的菜单项 |
+|---|---|---|
+| 普通录像 | `NormalRecordeMode` | 录像分辨率、码率、循环录像、曝光 |
+| 慢动作录像 | `SlowRecordeMode` | 慢动作类型（帧率）、曝光 |
+| 循环录像 | `LoopRecordeMode` | 录像分辨率、循环时长、曝光 |
+| 延时录像 | `TimeLapseMode` | 延时分辨率、间隔时间、曝光 |
+| 普通拍照 | `NormalCaptureMode` | 照片分辨率、曝光、白平衡 |
+| 自动拍照 | `AutoCaptureMode` | 照片分辨率、自动间隔、曝光 |
+| 连拍 | `ContinueCaptureMode` | 照片分辨率、连拍张数、曝光 |
+| 定时拍照 | `TimingCaptureMode` | 照片分辨率、倒计时秒数、曝光 |
+
+`systemMenus`（Wi-Fi、时间、语言、格式化等）**所有模式通用**，始终返回。
+
+**App 不需要做任何过滤逻辑。** 切换模式后重新调用此接口即可拿到新模式的菜单。
+
+> **对比 HDV CAM 原方案**：原方案需要 3 次请求（`setting_keys.xml` + 翻译 XML + `cmd=0x7d2/0x7d6` 当前值），App 端用 Jsoup 解析 XML 再按 `modeXmlName` 过滤拼装。新方案设备端一次性返回 JSON，App 拿到直接渲染。
+
 #### 响应示例
 
 ```json
@@ -493,6 +514,26 @@ class _SettingPageState extends State<SettingPage> {
         )).toList(),
       ),
     );
+  }
+}
+```
+
+---
+
+### 9.8 切换模式后刷新菜单
+
+**重要：** 调用 `POST /api/v1/camera/mode` 切换工作模式后，**必须重新调用 `GET /api/v1/settings/menus`** 获取新模式的菜单。不同模式的 `modeMenus` 内容不同。
+
+```dart
+Future<void> switchModeAndRefreshMenus(int modeIndex) async {
+  final resp = await http.post(
+    '/api/v1/camera/mode',
+    body: {'mode': modeIndex},
+  );
+  if (resp.isSuccess) {
+    // 模式切换成功 → 重新获取菜单（新模式的 modeMenus 不同）
+    final menuData = await loadMenus();
+    setState(() => _menuData = menuData);
   }
 }
 ```
